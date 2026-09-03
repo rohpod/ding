@@ -216,6 +216,22 @@ public final class AccountManager: ObservableObject {
         Self.logger.info("Successfully updated Keychain password for account \(id.uuidString, privacy: .public)")
     }
 
+    /// Updates the re-authentication requirement state for an existing account.
+    ///
+    /// - Parameters:
+    ///   - id: The unique account identifier.
+    ///   - needsReauthentication: Whether the account requires re-authentication.
+    /// - Throws: `AccountManagerError.accountNotFound` if absent, or `AccountStoreError` on failure.
+    public func setNeedsReauthentication(forAccountID id: UUID, needsReauthentication: Bool) throws {
+        guard let index = accounts.firstIndex(where: { $0.id == id }) else {
+            throw AccountManagerError.accountNotFound(id)
+        }
+
+        var account = accounts[index]
+        account.needsReauthentication = needsReauthentication
+        try updateAccount(account)
+    }
+
     /// Retrieves the stored app password for an account.
     ///
     /// - Parameter id: The unique account identifier.

@@ -39,6 +39,10 @@ public final class AppPreferences: ObservableObject {
     /// Defaults to `.always` (real-time push via IMAP IDLE).
     @Published public var defaultSyncFrequency: SyncFrequency {
         didSet {
+            if defaultSyncFrequency == .useDefault {
+                defaultSyncFrequency = .always
+                return
+            }
             userDefaults.set(defaultSyncFrequency.rawValue, forKey: Keys.defaultSyncFrequency)
             Self.logger.debug("Saved defaultSyncFrequency: \(self.defaultSyncFrequency.rawValue, privacy: .public)")
         }
@@ -49,6 +53,10 @@ public final class AppPreferences: ObservableObject {
     /// Defaults to `.doNothing`.
     @Published public var defaultNotificationClickBehavior: NotificationClickBehavior {
         didSet {
+            if defaultNotificationClickBehavior == .useDefault {
+                defaultNotificationClickBehavior = .doNothing
+                return
+            }
             userDefaults.set(defaultNotificationClickBehavior.rawValue, forKey: Keys.defaultNotificationClickBehavior)
             Self.logger.debug("Saved defaultNotificationClickBehavior: \(self.defaultNotificationClickBehavior.rawValue, privacy: .public)")
         }
@@ -85,7 +93,8 @@ public final class AppPreferences: ObservableObject {
 
         // defaultSyncFrequency: default .always
         if let rawSync = userDefaults.string(forKey: Keys.defaultSyncFrequency),
-           let frequency = SyncFrequency(rawValue: rawSync) {
+           let frequency = SyncFrequency(rawValue: rawSync),
+           frequency != .useDefault {
             self.defaultSyncFrequency = frequency
         } else {
             self.defaultSyncFrequency = .always
@@ -93,7 +102,8 @@ public final class AppPreferences: ObservableObject {
 
         // defaultNotificationClickBehavior: default .doNothing
         if let rawBehavior = userDefaults.string(forKey: Keys.defaultNotificationClickBehavior),
-           let behavior = NotificationClickBehavior(rawValue: rawBehavior) {
+           let behavior = NotificationClickBehavior(rawValue: rawBehavior),
+           behavior != .useDefault {
             self.defaultNotificationClickBehavior = behavior
         } else {
             self.defaultNotificationClickBehavior = .doNothing

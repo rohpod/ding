@@ -19,7 +19,7 @@ struct GeneralSettingsView: View {
             // MARK: - Sync Section
             Section("Sync") {
                 Picker("Default sync frequency", selection: $preferences.defaultSyncFrequency) {
-                    ForEach(SyncFrequency.allCases, id: \.self) { frequency in
+                    ForEach(SyncFrequency.generalOptions, id: \.self) { frequency in
                         Text(frequency.displayName).tag(frequency)
                     }
                 }
@@ -28,7 +28,7 @@ struct GeneralSettingsView: View {
             // MARK: - Notifications Section
             Section("Notifications") {
                 Picker("When notification is clicked", selection: $preferences.defaultNotificationClickBehavior) {
-                    ForEach(NotificationClickBehavior.allCases, id: \.self) { behavior in
+                    ForEach(NotificationClickBehavior.generalOptions, id: \.self) { behavior in
                         Text(behavior.displayName).tag(behavior)
                     }
                 }

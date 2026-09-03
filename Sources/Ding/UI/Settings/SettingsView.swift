@@ -25,6 +25,6 @@ struct SettingsView: View {
                 .tag(SettingsTab.accounts)
         }
         .tabViewStyle(.automatic)
-        .frame(minWidth: 500, minHeight: 300)
+        .frame(minWidth: 520, minHeight: 340)
     }
 }
