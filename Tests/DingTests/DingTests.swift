@@ -6,6 +6,9 @@ final class dingTests: XCTestCase {
     // MARK: - SyncFrequency Tests
 
     func testSyncFrequencyDisplayNamesAndIntervals() {
+        XCTAssertEqual(SyncFrequency.useDefault.displayName, "Default")
+        XCTAssertNil(SyncFrequency.useDefault.intervalSeconds, "useDefault delegates to global setting, interval should be nil.")
+
         XCTAssertEqual(SyncFrequency.always.displayName, "Always")
         XCTAssertNil(SyncFrequency.always.intervalSeconds, "Always mode is IMAP IDLE push-based, interval should be nil.")
 
@@ -36,6 +39,7 @@ final class dingTests: XCTestCase {
     // MARK: - NotificationClickBehavior Tests
 
     func testNotificationClickBehaviorDisplayNames() {
+        XCTAssertEqual(NotificationClickBehavior.useDefault.displayName, "Default")
         XCTAssertEqual(NotificationClickBehavior.doNothing.displayName, "Do nothing")
         XCTAssertEqual(NotificationClickBehavior.openMailApp.displayName, "Open Mail app")
         XCTAssertEqual(NotificationClickBehavior.openInBrowser.displayName, "Open in browser")
