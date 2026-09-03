@@ -1,6 +1,6 @@
 import SwiftUI
 
-/// Available tabs in the Ding Settings window.
+/// Available tabs in the ding Settings window.
 enum SettingsTab: Hashable {
     case general
     case accounts

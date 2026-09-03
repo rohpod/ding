@@ -1,6 +1,6 @@
 import SwiftUI
 
-/// Placeholder view for accounts settings in Ding.
+/// Placeholder view for accounts settings in ding.
 struct AccountsSettingsView: View {
     var body: some View {
         VStack {

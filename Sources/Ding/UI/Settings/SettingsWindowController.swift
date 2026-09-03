@@ -2,7 +2,7 @@ import AppKit
 import os
 import SwiftUI
 
-/// Controls the lifecycle and presentation of the "Ding Settings" window.
+/// Controls the lifecycle and presentation of the "ding Settings" window.
 ///
 /// This controller hosts the SwiftUI `SettingsView` in an AppKit window.
 /// It ensures that only a single instance of the window is created and that closing the window
@@ -28,11 +28,11 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
             defer: false
         )
 
-        window.title = "Ding Settings"
+        window.title = "ding Settings"
         window.center()
         window.isReleasedWhenClosed = false
         window.contentView = NSHostingView(rootView: SettingsView())
-        window.setFrameAutosaveName("DingSettingsWindow")
+        window.setFrameAutosaveName("dingSettingsWindow")
 
         super.init(window: window)
         window.delegate = self
