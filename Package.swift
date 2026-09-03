@@ -2,26 +2,26 @@
 import PackageDescription
 
 let package = Package(
-    name: "Ding",
+    name: "ding",
     platforms: [
         .macOS(.v13)
     ],
     products: [
-        .executable(name: "Ding", targets: ["Ding"])
+        .executable(name: "ding", targets: ["ding"])
     ],
     dependencies: [
         .package(url: "https://github.com/apple/swift-nio-imap.git", from: "0.4.0")
     ],
     targets: [
         .executableTarget(
-            name: "Ding",
+            name: "ding",
             dependencies: [
                 .product(name: "NIOIMAP", package: "swift-nio-imap")
             ]
         ),
         .testTarget(
-            name: "DingTests",
-            dependencies: ["Ding"]
+            name: "dingTests",
+            dependencies: ["ding"]
         )
     ],
     swiftLanguageModes: [.v6]
