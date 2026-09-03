@@ -26,6 +26,13 @@ public enum SyncFrequency: String, CaseIterable, Codable, Sendable {
     /// Periodic poll every 60 minutes.
     case hourly
 
+    /// The subset of synchronization frequency options valid for global default application settings.
+    ///
+    /// Excludes `.useDefault` because the global general preference is itself the default.
+    public static var generalOptions: [SyncFrequency] {
+        allCases.filter { $0 != .useDefault }
+    }
+
     /// User-facing display name for the sync frequency option.
     public var displayName: String {
         switch self {

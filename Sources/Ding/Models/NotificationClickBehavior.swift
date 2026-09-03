@@ -17,6 +17,13 @@ public enum NotificationClickBehavior: String, CaseIterable, Codable, Sendable {
     /// Open the provider's webmail portal in the default browser.
     case openInBrowser
 
+    /// The subset of notification click behaviors valid for global default application settings.
+    ///
+    /// Excludes `.useDefault` because the global general preference is itself the default.
+    public static var generalOptions: [NotificationClickBehavior] {
+        allCases.filter { $0 != .useDefault }
+    }
+
     /// User-facing display name for the notification click behavior.
     public var displayName: String {
         switch self {

@@ -36,6 +36,14 @@ final class dingTests: XCTestCase {
         }
     }
 
+    func testSyncFrequencyGeneralOptionsExcludesUseDefault() {
+        let general = SyncFrequency.generalOptions
+        XCTAssertFalse(general.contains(.useDefault))
+        XCTAssertEqual(general.count, SyncFrequency.allCases.count - 1)
+        XCTAssertTrue(general.contains(.always))
+        XCTAssertTrue(general.contains(.fifteenMinutes))
+    }
+
     // MARK: - NotificationClickBehavior Tests
 
     func testNotificationClickBehaviorDisplayNames() {
@@ -43,6 +51,15 @@ final class dingTests: XCTestCase {
         XCTAssertEqual(NotificationClickBehavior.doNothing.displayName, "Do nothing")
         XCTAssertEqual(NotificationClickBehavior.openMailApp.displayName, "Open Mail app")
         XCTAssertEqual(NotificationClickBehavior.openInBrowser.displayName, "Open in browser")
+    }
+
+    func testNotificationClickBehaviorGeneralOptionsExcludesUseDefault() {
+        let general = NotificationClickBehavior.generalOptions
+        XCTAssertFalse(general.contains(.useDefault))
+        XCTAssertEqual(general.count, NotificationClickBehavior.allCases.count - 1)
+        XCTAssertTrue(general.contains(.doNothing))
+        XCTAssertTrue(general.contains(.openMailApp))
+        XCTAssertTrue(general.contains(.openInBrowser))
     }
 
     func testNotificationClickBehaviorCodable() throws {
@@ -95,6 +112,23 @@ final class dingTests: XCTestCase {
         XCTAssertEqual(reloaded.defaultNotificationClickBehavior, .openMailApp)
         XCTAssertFalse(reloaded.isMenuBarIconVisible)
         XCTAssertTrue(reloaded.isOpenAtLoginEnabled)
+    }
+
+    @MainActor
+    func testAppPreferencesRejectsUseDefault() {
+        let suiteName = "com.ding.tests.rejectdefault.\(UUID().uuidString)"
+        guard let testDefaults = UserDefaults(suiteName: suiteName) else {
+            XCTFail("Failed to create isolated test UserDefaults suite.")
+            return
+        }
+        defer { testDefaults.removePersistentDomain(forName: suiteName) }
+
+        let preferences = AppPreferences(userDefaults: testDefaults)
+        preferences.defaultSyncFrequency = .useDefault
+        XCTAssertEqual(preferences.defaultSyncFrequency, .always, "Setting useDefault should reset to .always")
+
+        preferences.defaultNotificationClickBehavior = .useDefault
+        XCTAssertEqual(preferences.defaultNotificationClickBehavior, .doNothing, "Setting useDefault should reset to .doNothing")
     }
 
     // MARK: - Core Services Verification
