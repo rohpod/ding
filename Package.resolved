@@ -1,5 +1,5 @@
 {
-  "originHash" : "751f4b738a1186da983b17c1f5df47a73f6cd3fa5e0ff3eeaddad530b8bb95b4",
+  "originHash" : "c4681cc45e180caa4917160e9f8898fc34ee0d6f0980796abcb0f800e621887a",
   "pins" : [
     {
       "identity" : "swift-atomics",
@@ -35,6 +35,15 @@
       "state" : {
         "revision" : "d67f1243f731457cb9f2eb0beb27eff9e533bf7b",
         "version" : "0.4.0"
+      }
+    },
+    {
+      "identity" : "swift-nio-ssl",
+      "kind" : "remoteSourceControl",
+      "location" : "https://github.com/apple/swift-nio-ssl.git",
+      "state" : {
+        "revision" : "03827c1a9fdb2b6b00a4e93ede8861520263af8c",
+        "version" : "2.37.4"
       }
     },
     {
