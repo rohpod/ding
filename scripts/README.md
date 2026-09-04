@@ -66,3 +66,70 @@ Resets local testing state to simulate a completely fresh "first launch" environ
 ```bash
 ./scripts/clean.sh
 ```
+
+---
+
+## 3. `scripts/release.sh`
+
+### Purpose
+Dedicated release packaging script that produces a clean, versioned, distributable zip archive (`dist/ding-{VERSION}.zip`) and a SHA-256 checksum file (`dist/ding-{VERSION}.zip.sha256`) ready to attach to a GitHub Release.
+
+### When to Use
+Use this script **only when preparing to publish an official new version release**.
+For routine local development, feature testing, or system integration checks, use `scripts/build-app.sh` instead.
+
+### What it Does
+1. **Version Validation**: Reads `VERSION` from the repository root and validates that it follows strict semantic versioning (`x.y.z` with numeric digits only).
+2. **Overwrite Safety**: Checks if a release archive for this exact version already exists in `dist/`. If found, it warns and prompts for confirmation to prevent accidental clobbering (can be bypassed with `--force`).
+3. **Build Execution**: Calls `scripts/build-app.sh release --no-run` to compile an optimized release binary and assemble an ad-hoc signed `ding.app` bundle in `.build/`.
+4. **Staging & Packaging**: Copies `ding.app` into an isolated staging directory (`.build/release-staging/`) and zips it into `dist/ding-{VERSION}.zip`, preserving symlinks and bundle structure.
+5. **Checksum Generation**: Computes a SHA-256 checksum file (`dist/ding-{VERSION}.zip.sha256`) using `shasum -a 256` for integrity verification.
+6. **Next Steps Summary**: Prints the archive path, size, SHA-256 hash, and exact terminal commands for tagging and publishing to GitHub.
+
+### How to Run
+
+```bash
+# Package the current version:
+./scripts/release.sh
+
+# Or overwrite an existing archive without prompt:
+./scripts/release.sh --force
+```
+
+### Full Release & Publishing Workflow
+
+Follow these steps when cutting a new release:
+
+1. **Update `VERSION`**:
+   Edit the single-line `VERSION` file at the repository root with the new semantic version (e.g. `0.2.0`).
+2. **Commit the version bump**:
+   ```bash
+   git add VERSION
+   git commit -m "chore: bump version to 0.2.0"
+   ```
+3. **Create and push a git tag**:
+   ```bash
+   git tag v0.2.0
+   git push origin v0.2.0
+   ```
+4. **Package the release artifact**:
+   ```bash
+   ./scripts/release.sh
+   ```
+   This outputs `dist/ding-0.2.0.zip` and `dist/ding-0.2.0.zip.sha256`.
+5. **Publish the GitHub Release**:
+   * **Web UI (Primary)**:
+     1. Open your browser and navigate to `https://github.com/rohpod/ding/releases/new`.
+     2. Select the tag: `v0.2.0`.
+     3. Enter the release title: `ding v0.2.0`.
+     4. Add release notes describing changes and improvements.
+     5. Drag and drop `dist/ding-0.2.0.zip` and `dist/ding-0.2.0.zip.sha256` into the release binaries/assets area.
+     6. Click **Publish release**.
+   * **GitHub CLI (`gh`) (Optional shortcut)**:
+     ```bash
+     gh release create v0.2.0 dist/ding-0.2.0.zip dist/ding-0.2.0.zip.sha256 --title "ding v0.2.0" --generate-notes
+     ```
+
+### Gitignore Behavior
+All release output is placed inside the top-level `dist/` directory. `dist/` is ignored by git in `.gitignore`, ensuring distributable zip archives and checksum files are never committed to the repository.
+
