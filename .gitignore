@@ -1,6 +1,7 @@
 # Swift Package Manager build artifacts
 .build/
 build/
+dist/
 .swiftpm/
 
 # macOS
