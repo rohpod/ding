@@ -78,6 +78,28 @@ public enum MailProvider: String, CaseIterable, Codable, Sendable {
         return URL(string: urlString)!
     }
 
+    /// Direct URL to the provider's webmail in the default browser.
+    ///
+    /// Note: Deep-linking to the exact message varies by provider and is not implemented in v1;
+    /// this opens the provider's general webmail portal without forcing specific user accounts or mailbox folders.
+    public var webmailURL: URL {
+        let urlString: String
+        switch self {
+        case .gmail:
+            urlString = "https://mail.google.com"
+        case .icloud:
+            urlString = "https://www.icloud.com/mail"
+        case .outlook:
+            urlString = "https://outlook.live.com/mail"
+        case .yahoo:
+            urlString = "https://mail.yahoo.com"
+        case .fastmail:
+            urlString = "https://app.fastmail.com"
+        }
+        // Force-unwrap justified: URLs are known static compile-time constants.
+        return URL(string: urlString)!
+    }
+
     /// Known email domain names associated with this provider.
     public var domains: [String] {
         switch self {

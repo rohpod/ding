@@ -14,9 +14,11 @@ fi
 
 echo "Building ding executable with SwiftPM..."
 if [ -d "/Applications/Xcode.app/Contents/Developer" ]; then
-    DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer swift build
+    DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer xcrun swift build
+    BIN_DIR="$(DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer xcrun swift build --show-bin-path)"
 else
     swift build
+    BIN_DIR="$(swift build --show-bin-path)"
 fi
 
 APP_DIR="$ROOT_DIR/build/ding.app"
@@ -25,7 +27,7 @@ rm -rf "$APP_DIR"
 mkdir -p "$APP_DIR/Contents/MacOS"
 mkdir -p "$APP_DIR/Contents/Resources"
 
-cp ".build/arm64-apple-macosx/debug/ding" "$APP_DIR/Contents/MacOS/ding"
+cp "$BIN_DIR/ding" "$APP_DIR/Contents/MacOS/ding"
 
 cat << 'EOF' > "$APP_DIR/Contents/Info.plist"
 <?xml version="1.0" encoding="UTF-8"?>

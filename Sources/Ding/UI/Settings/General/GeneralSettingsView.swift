@@ -50,6 +50,10 @@ struct GeneralSettingsView: View {
                     }
                 }
 
+                if notificationStatus == .denied {
+                    deniedPermissionCallout
+                }
+
                 if let error = notificationErrorMessage {
                     Text(error)
                         .font(.caption)
@@ -112,6 +116,45 @@ struct GeneralSettingsView: View {
 
     private var isNotificationAllowed: Bool {
         notificationStatus == .authorized || notificationStatus == .provisional
+    }
+
+    @ViewBuilder
+    private var deniedPermissionCallout: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            HStack(alignment: .top, spacing: 10) {
+                Image(systemName: "exclamationmark.triangle.fill")
+                    .foregroundColor(.orange)
+                    .font(.title2)
+
+                VStack(alignment: .leading, spacing: 4) {
+                    Text("Notifications Disabled")
+                        .font(.headline)
+                        .foregroundColor(.primary)
+
+                    Text("ding cannot notify you about new mail without system notification permissions. The app will not be able to alert you when new messages arrive until notifications are enabled in macOS System Settings.")
+                        .font(.subheadline)
+                        .foregroundColor(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+            }
+
+            HStack {
+                Spacer()
+                Button("Open Notification Settings") {
+                    notificationManager.openSystemSettingsForNotifications()
+                }
+                .buttonStyle(.borderedProminent)
+            }
+        }
+        .padding(12)
+        .background(
+            RoundedRectangle(cornerRadius: 8)
+                .fill(Color.orange.opacity(0.12))
+        )
+        .overlay(
+            RoundedRectangle(cornerRadius: 8)
+                .stroke(Color.orange.opacity(0.35), lineWidth: 1)
+        )
     }
 
     @ViewBuilder

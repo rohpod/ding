@@ -1,11 +1,21 @@
 import AppKit
 import Combine
 import os
+import UserNotifications
 
 /// The application delegate responsible for managing the menu bar status item and app lifecycle.
 @MainActor
 final class AppDelegate: NSObject, NSApplicationDelegate {
     private static let logger = Logger(subsystem: "com.ding.mac", category: "AppLifecycle")
+
+    /// Strong reference to the notification click and presentation delegate.
+    private let notificationClickHandler = NotificationClickHandler.shared
+
+    /// Service responsible for delivering notifications and requesting permission.
+    private let notificationService = NotificationService.shared
+
+    /// Active background task consuming the aggregated new mail event stream.
+    private var mailStreamTask: Task<Void, Never>?
 
     /// The single system status bar item for ding, conditionally created based on user preference.
     private var statusItem: NSStatusItem?
@@ -25,6 +35,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     func applicationDidFinishLaunching(_ notification: Notification) {
         Self.logger.info("ding launched. Ensuring accessory activation policy and setting up status bar item.")
 
+        // Configure UNUserNotificationCenter delegate early in launch sequence before any notifications arrive.
+        if NotificationPermissionManager.isRunningInAppBundle {
+            UNUserNotificationCenter.current().delegate = notificationClickHandler
+        }
+
         // Reinforce accessory activation policy for menu-bar-only operation.
         NSApplication.shared.setActivationPolicy(.accessory)
 
@@ -43,6 +58,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // Start SyncEngine to begin watching all configured accounts
         SyncEngine.shared.start()
 
+        // Subscribe to aggregated new mail events
+        startObservingNewMail()
+
+        // Request notification permission if not yet determined
+        Task {
+            await notificationService.requestPermissionIfNeeded()
+        }
+
         // Per spec: BOTH first launch and subsequent launches should open the Settings window automatically.
         // This ensures the user has immediate access to configuration even if the menu bar icon is hidden.
         openSettings()
@@ -54,8 +77,19 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// icon is visible or hidden. This allows users who have hidden the menu bar icon to easily access
     /// settings by launching ding again from Applications or Spotlight.
     func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool {
-        Self.logger.info("ding reopen triggered from system (Spotlight/Applications). Opening Settings.")
-        openSettings()
+        // If the app was reopened because the user clicked a notification,
+        // do not pop open the settings window.
+        // We dispatch asynchronously so any concurrent notification event updates lastNotificationClickTime.
+        DispatchQueue.main.async { [weak self] in
+            guard let self = self else { return }
+            let timeSinceClick = Date().timeIntervalSince(NotificationClickHandler.lastNotificationClickTime)
+            if timeSinceClick < 0.5 {
+                Self.logger.info("Reopen event associated with notification click; skipping Settings window presentation.")
+                return
+            }
+            Self.logger.info("ding reopen triggered from system (Spotlight/Applications). Opening Settings.")
+            self.openSettings()
+        }
         return true
     }
 
@@ -154,11 +188,39 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         controller.showSettingsWindow()
     }
 
+    // MARK: - New Mail Observation
+
+    /// Subscribes to the aggregated stream of new mail events emitted across all account workers.
+    private func startObservingNewMail() {
+        mailStreamTask?.cancel()
+        let stream = SyncEngine.shared.newMailStream()
+        mailStreamTask = Task { [weak self] in
+            for await event in stream {
+                guard !Task.isCancelled else { break }
+                await self?.handleNewMailEvent(event)
+            }
+        }
+    }
+
+    /// Handles an incoming new mail event by looking up the account and posting a notification.
+    private func handleNewMailEvent(_ event: NewMailEvent) async {
+        guard let account = AccountManager.shared.accounts.first(where: { $0.id == event.accountID }) else {
+            Self.logger.warning("Received new mail event for account \(event.accountID.uuidString, privacy: .public), but account is no longer registered.")
+            return
+        }
+
+        await notificationService.send(for: event, account: account)
+    }
+
     /// Action handler for "Quit ding".
     ///
     /// Terminates the application.
     @objc func quit() {
         Self.logger.info("Action triggered: quit")
+
+        // Cancel the mail stream consumer task
+        mailStreamTask?.cancel()
+        mailStreamTask = nil
 
         // Cleanly cancel all SyncEngine background tasks and active IMAP connections before terminating.
         SyncEngine.shared.stop()
