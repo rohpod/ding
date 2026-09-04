@@ -15,7 +15,10 @@ if pgrep -x ding >/dev/null 2>&1; then
 fi
 
 # 2. Unregister macOS Login Item via ding.app bundle
-if [ -d "$ROOT_DIR/build/ding.app" ]; then
+if [ -d "$ROOT_DIR/.build/ding.app" ]; then
+    echo "• Unregistering login item from macOS..."
+    "$ROOT_DIR/.build/ding.app/Contents/MacOS/ding" --reset-login-item 2>/dev/null || true
+elif [ -d "$ROOT_DIR/build/ding.app" ]; then
     echo "• Unregistering login item from macOS..."
     "$ROOT_DIR/build/ding.app/Contents/MacOS/ding" --reset-login-item 2>/dev/null || true
 fi
