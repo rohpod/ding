@@ -156,4 +156,99 @@ final class SyncEngineTests: XCTestCase {
 
         engine.stop()
     }
+
+    @MainActor
+    func testSyncEngineWithZeroAccountsStartsZeroWorkers() throws {
+        let manager = AccountManager(accountStore: testStore, keychainService: mockKeychain)
+        XCTAssertTrue(manager.accounts.isEmpty)
+        let syncStore = self.syncStore!
+
+        let engine = SyncEngine(
+            accountManager: manager,
+            workerFactory: { account, onNewMail in
+                AccountSyncWorker(
+                    account: account,
+                    imapClient: FakeIMAPClient(),
+                    syncStateStore: syncStore,
+                    passwordProvider: { _ in "pwd" },
+                    sleepProvider: { _ in try await Task.sleep(nanoseconds: 10_000_000) },
+                    onNewMail: onNewMail
+                )
+            }
+        )
+
+        XCTAssertFalse(engine.isRunning)
+        XCTAssertEqual(engine.workers.count, 0)
+
+        // Starting with zero accounts must cleanly transition isRunning to true with 0 workers
+        engine.start()
+
+        XCTAssertTrue(engine.isRunning)
+        XCTAssertEqual(engine.workers.count, 0)
+        XCTAssertTrue(engine.workers.isEmpty)
+
+        engine.stop()
+        XCTAssertFalse(engine.isRunning)
+        XCTAssertEqual(engine.workers.count, 0)
+    }
+
+    @MainActor
+    func testSyncEngineRemovingLastAccountTearsDownWorker() async throws {
+        let manager = AccountManager(accountStore: testStore, keychainService: mockKeychain)
+        let acc = try manager.addAccount(email: "solo@fastmail.com", provider: .fastmail, appPassword: "pwd")
+        let syncStore = self.syncStore!
+
+        let capturedWorker = LockProtected<AccountSyncWorker?>(nil)
+
+        let engine = SyncEngine(
+            accountManager: manager,
+            workerFactory: { account, onNewMail in
+                let worker = AccountSyncWorker(
+                    account: account,
+                    imapClient: FakeIMAPClient(),
+                    syncStateStore: syncStore,
+                    passwordProvider: { _ in "pwd" },
+                    sleepProvider: { _ in try await Task.sleep(nanoseconds: 10_000_000) },
+                    onNewMail: onNewMail
+                )
+                capturedWorker.set(worker)
+                return worker
+            }
+        )
+
+        engine.start()
+        XCTAssertEqual(engine.workers.count, 1)
+        XCTAssertNotNil(engine.workers[acc.id])
+
+        guard let worker = capturedWorker.get() else {
+            XCTFail("Worker was not initialized")
+            return
+        }
+
+        // Wait briefly for worker to start
+        for _ in 0..<20 {
+            if await worker.active { break }
+            try await Task.sleep(nanoseconds: 10_000_000)
+        }
+        let isActiveBeforeRemoval = await worker.active
+        XCTAssertTrue(isActiveBeforeRemoval, "Worker must be running before account removal")
+
+        // Dynamically remove the single remaining account
+        try manager.removeAccount(id: acc.id)
+
+        // Verify SyncEngine workers dictionary is now empty
+        XCTAssertEqual(engine.workers.count, 0)
+        XCTAssertNil(engine.workers[acc.id])
+        XCTAssertTrue(engine.workers.isEmpty)
+
+        // Wait for the asynchronous teardown task to stop the worker
+        for _ in 0..<20 {
+            if !(await worker.active) { break }
+            try await Task.sleep(nanoseconds: 10_000_000)
+        }
+        let isActiveAfterRemoval = await worker.active
+        XCTAssertFalse(isActiveAfterRemoval, "Worker must be stopped when the last account is removed")
+
+        engine.stop()
+    }
 }

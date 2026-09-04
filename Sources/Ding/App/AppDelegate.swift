@@ -131,12 +131,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let item = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
 
         if let button = item.button {
-            // TODO: replace with custom ding icon asset
-            let image = NSImage(
-                systemSymbolName: "envelope",
-                accessibilityDescription: "ding Mail Notification"
-            )
-            image?.isTemplate = true
+            let image = loadMenuBarIcon()
             button.image = image
             button.imagePosition = .imageOnly
         } else {
@@ -167,6 +162,48 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         self.statusItem = item
 
         Self.logger.info("Menu bar status item configured successfully.")
+    }
+
+    /// Loads the custom menu bar template icon asset, configuring it for dynamic macOS tinting.
+    ///
+    /// Supports loading from the `.app` bundle (`Bundle.main`), the SwiftPM resource bundle (`Bundle.module`),
+    /// or via standard named lookup, with a graceful fallback to the SF Symbol "envelope".
+    private func loadMenuBarIcon() -> NSImage? {
+        let resourceName = "MenuBarIconTemplate"
+
+        // 1. Attempt loading directly from the app bundle's Contents/Resources directory
+        if let url = Bundle.main.url(forResource: resourceName, withExtension: "png"),
+           let image = NSImage(contentsOf: url) {
+            image.isTemplate = true
+            image.size = NSSize(width: 18, height: 16)
+            return image
+        }
+
+        // 2. Attempt loading from the SwiftPM resource bundle (used during unbundled runs and development)
+        #if SWIFT_PACKAGE
+        if let url = Bundle.module.url(forResource: resourceName, withExtension: "png"),
+           let image = NSImage(contentsOf: url) {
+            image.isTemplate = true
+            image.size = NSSize(width: 18, height: 16)
+            return image
+        }
+        #endif
+
+        // 3. Attempt loading via standard named image lookup
+        if let image = NSImage(named: NSImage.Name(resourceName)) {
+            image.isTemplate = true
+            image.size = NSSize(width: 18, height: 16)
+            return image
+        }
+
+        // 4. Safe fallback: SF Symbol "envelope"
+        Self.logger.warning("MenuBarIconTemplate image asset not found; falling back to SF Symbol envelope.")
+        let fallback = NSImage(
+            systemSymbolName: "envelope",
+            accessibilityDescription: "ding Mail Notification"
+        )
+        fallback?.isTemplate = true
+        return fallback
     }
 
     // MARK: - Actions
