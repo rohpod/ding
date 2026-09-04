@@ -258,6 +258,10 @@ struct AddAccountView: View {
             return "Unexpected response from \(provider.displayName): \(details)"
         case .notConnected:
             return "Not connected to the mail server."
+        case .idleNotSupported:
+            return "\(provider.displayName) does not support IDLE push notifications."
+        case .selectFailed(let details):
+            return "Failed to access mailbox: \(details)"
         }
     }
 }

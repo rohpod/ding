@@ -35,6 +35,12 @@ public enum IMAPClientError: LocalizedError, Sendable, Equatable {
     /// An operation requiring an active connection (such as `login`) was called while disconnected.
     case notConnected
 
+    /// The mail server does not advertise support for the IMAP `IDLE` extension (RFC 2177).
+    case idleNotSupported
+
+    /// The `SELECT` command failed or returned invalid/missing mailbox state.
+    case selectFailed(String)
+
     public var errorDescription: String? {
         switch self {
         case .connectionFailed(let underlying):
@@ -49,6 +55,10 @@ public enum IMAPClientError: LocalizedError, Sendable, Equatable {
             return "The operation timed out while waiting for a response from the mail server."
         case .notConnected:
             return "The mail client is not connected to any server."
+        case .idleNotSupported:
+            return "The mail server does not support real-time IDLE push notifications."
+        case .selectFailed(let details):
+            return "Failed to select mailbox: \(details)"
         }
     }
 
@@ -56,10 +66,14 @@ public enum IMAPClientError: LocalizedError, Sendable, Equatable {
         switch (lhs, rhs) {
         case (.authenticationFailed, .authenticationFailed),
              (.timeout, .timeout),
-             (.notConnected, .notConnected):
+             (.notConnected, .notConnected),
+             (.idleNotSupported, .idleNotSupported):
             return true
 
         case (.unexpectedResponse(let lhsDetails), .unexpectedResponse(let rhsDetails)):
+            return lhsDetails == rhsDetails
+
+        case (.selectFailed(let lhsDetails), .selectFailed(let rhsDetails)):
             return lhsDetails == rhsDetails
 
         case (.connectionFailed(let lhsError), .connectionFailed(let rhsError)):

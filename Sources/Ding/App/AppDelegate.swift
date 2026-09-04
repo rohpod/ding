@@ -40,6 +40,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // immediately creates or removes the NSStatusItem without an app restart.
         observePreferences()
 
+        // Start SyncEngine to begin watching all configured accounts
+        SyncEngine.shared.start()
+
         // Per spec: BOTH first launch and subsequent launches should open the Settings window automatically.
         // This ensures the user has immediate access to configuration even if the menu bar icon is hidden.
         openSettings()
@@ -157,8 +160,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     @objc func quit() {
         Self.logger.info("Action triggered: quit")
 
-        // NOTE: In later milestones, this must also cleanly cancel all SyncEngine
-        // background tasks and active IMAP connections before terminating.
+        // Cleanly cancel all SyncEngine background tasks and active IMAP connections before terminating.
+        SyncEngine.shared.stop()
 
         NSApplication.shared.terminate(nil)
     }
