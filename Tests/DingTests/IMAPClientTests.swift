@@ -25,6 +25,11 @@ final class IMAPClientTests: XCTestCase {
         let tlsErr2 = IMAPClientError.tlsHandshakeFailed(underlying: nsErr2)
         let tlsErr3 = IMAPClientError.tlsHandshakeFailed(underlying: nsErr3)
 
+        let idleErr = IMAPClientError.idleNotSupported
+        let selectErr1 = IMAPClientError.selectFailed("Mailbox does not exist")
+        let selectErr2 = IMAPClientError.selectFailed("Mailbox does not exist")
+        let selectErr3 = IMAPClientError.selectFailed("Permission denied")
+
         // Same-case equality
         XCTAssertEqual(authErr, .authenticationFailed)
         XCTAssertEqual(timeoutErr, .timeout)
@@ -32,20 +37,26 @@ final class IMAPClientTests: XCTestCase {
         XCTAssertEqual(unexpErr1, unexpErr2)
         XCTAssertEqual(connErr1, connErr2)
         XCTAssertEqual(tlsErr1, tlsErr2)
+        XCTAssertEqual(idleErr, .idleNotSupported)
+        XCTAssertEqual(selectErr1, selectErr2)
 
         // Same-case inequality with different payloads
         XCTAssertNotEqual(unexpErr1, unexpErr3)
         XCTAssertNotEqual(connErr1, connErr3)
         XCTAssertNotEqual(tlsErr1, tlsErr3)
+        XCTAssertNotEqual(selectErr1, selectErr3)
 
         // Cross-case inequality (crucial for UX path separation)
         XCTAssertNotEqual(authErr, connErr1)
         XCTAssertNotEqual(authErr, tlsErr1)
         XCTAssertNotEqual(authErr, timeoutErr)
         XCTAssertNotEqual(authErr, notConnErr)
+        XCTAssertNotEqual(authErr, idleErr)
+        XCTAssertNotEqual(authErr, selectErr1)
         XCTAssertNotEqual(connErr1, tlsErr1)
         XCTAssertNotEqual(connErr1, timeoutErr)
         XCTAssertNotEqual(tlsErr1, timeoutErr)
+        XCTAssertNotEqual(idleErr, selectErr1)
     }
 
     func testIMAPClientErrorDescriptions() {
@@ -74,6 +85,14 @@ final class IMAPClientTests: XCTestCase {
         let unexpErr = IMAPClientError.unexpectedResponse("UNKNOWN 42")
         XCTAssertNotNil(unexpErr.errorDescription)
         XCTAssertTrue(unexpErr.errorDescription!.contains("UNKNOWN 42"))
+
+        let idleErr = IMAPClientError.idleNotSupported
+        XCTAssertNotNil(idleErr.errorDescription)
+        XCTAssertTrue(idleErr.errorDescription!.contains("IDLE"))
+
+        let selectErr = IMAPClientError.selectFailed("Mailbox locked")
+        XCTAssertNotNil(selectErr.errorDescription)
+        XCTAssertTrue(selectErr.errorDescription!.contains("Mailbox locked"))
     }
 
     // MARK: - FakeIMAPClient Tests
@@ -235,6 +254,11 @@ final class IMAPClientTests: XCTestCase {
 
         try await client.connect(host: "imap.gmail.com", port: 993)
         try await client.login(email: "a@b.com", password: "p")
+        _ = try await client.selectInbox()
+        _ = try await client.fetchNewMessages(sinceUID: 0)
+        _ = try await client.supportsIdle()
+        _ = try await client.startIdle()
+        try await client.stopIdle()
         await client.disconnect()
 
         await client.resetCallCounts()
@@ -242,12 +266,143 @@ final class IMAPClientTests: XCTestCase {
         let connectCount = await client.connectCallCount
         let loginCount = await client.loginCallCount
         let disconnectCount = await client.disconnectCallCount
+        let selectCount = await client.selectInboxCallCount
+        let fetchCount = await client.fetchNewMessagesCallCount
+        let startIdleCount = await client.startIdleCallCount
+        let stopIdleCount = await client.stopIdleCallCount
+        let supportsIdleCount = await client.supportsIdleCallCount
         let lastHost = await client.lastConnectedHost
+        let lastSinceUID = await client.lastFetchSinceUID
 
         XCTAssertEqual(connectCount, 0)
         XCTAssertEqual(loginCount, 0)
         XCTAssertEqual(disconnectCount, 0)
+        XCTAssertEqual(selectCount, 0)
+        XCTAssertEqual(fetchCount, 0)
+        XCTAssertEqual(startIdleCount, 0)
+        XCTAssertEqual(stopIdleCount, 0)
+        XCTAssertEqual(supportsIdleCount, 0)
         XCTAssertNil(lastHost)
+        XCTAssertNil(lastSinceUID)
+    }
+
+    func testFakeIMAPClientSelectInbox() async throws {
+        let client = FakeIMAPClient()
+
+        // 1. Throws notConnected when disconnected
+        do {
+            _ = try await client.selectInbox()
+            XCTFail("Expected selectInbox to throw .notConnected")
+        } catch let error as IMAPClientError {
+            XCTAssertEqual(error, .notConnected)
+        }
+
+        // 2. Connected returns default mailbox status
+        try await client.connect(host: "imap.example.com", port: 993)
+        try await client.login(email: "user@example.com", password: "pwd")
+        let status = try await client.selectInbox()
+        XCTAssertEqual(status.uidValidity, 1)
+        XCTAssertEqual(status.uidNext, 100)
+        let selectCount = await client.selectInboxCallCount
+        XCTAssertEqual(selectCount, 2)
+
+        // 3. Simulates select failure
+        await client.setSelectInboxError(.selectFailed("Mailbox locked"))
+        do {
+            _ = try await client.selectInbox()
+            XCTFail("Expected selectInbox to fail")
+        } catch let error as IMAPClientError {
+            XCTAssertEqual(error, .selectFailed("Mailbox locked"))
+        }
+        let finalCount = await client.selectInboxCallCount
+        XCTAssertEqual(finalCount, 3)
+    }
+
+    func testFakeIMAPClientFetchNewMessages() async throws {
+        let client = FakeIMAPClient()
+
+        // 1. Throws notConnected when disconnected
+        do {
+            _ = try await client.fetchNewMessages(sinceUID: 10)
+            XCTFail("Expected fetchNewMessages to throw .notConnected")
+        } catch let error as IMAPClientError {
+            XCTAssertEqual(error, .notConnected)
+        }
+
+        try await client.connect(host: "imap.example.com", port: 993)
+        try await client.login(email: "user@example.com", password: "pwd")
+
+        // 2. Configure canned messages and test filtering
+        let msg1 = MessageSummary(uid: 10, subject: "Old", from: "a@b.com", dateReceived: Date())
+        let msg2 = MessageSummary(uid: 20, subject: "New 1", from: "c@d.com", dateReceived: Date())
+        let msg3 = MessageSummary(uid: 30, subject: "New 2", from: "e@f.com", dateReceived: Date())
+        await client.setCannedMessages([msg3, msg1, msg2])
+
+        let fetched = try await client.fetchNewMessages(sinceUID: 15)
+        XCTAssertEqual(fetched.count, 2)
+        XCTAssertEqual(fetched[0].uid, 20)
+        XCTAssertEqual(fetched[1].uid, 30)
+
+        let lastSince = await client.lastFetchSinceUID
+        XCTAssertEqual(lastSince, 15)
+
+        // 3. Simulates fetch error
+        await client.setFetchMessagesError(.unexpectedResponse("Fetch failed"))
+        do {
+            _ = try await client.fetchNewMessages(sinceUID: 15)
+            XCTFail("Expected fetch to fail")
+        } catch let error as IMAPClientError {
+            XCTAssertEqual(error, .unexpectedResponse("Fetch failed"))
+        }
+    }
+
+    func testFakeIMAPClientSupportsIdleAndStartStopIdle() async throws {
+        let client = FakeIMAPClient()
+
+        // 1. Throws notConnected when disconnected
+        do {
+            _ = try await client.supportsIdle()
+            XCTFail("Expected supportsIdle to throw .notConnected")
+        } catch let error as IMAPClientError {
+            XCTAssertEqual(error, .notConnected)
+        }
+
+        try await client.connect(host: "imap.example.com", port: 993)
+        try await client.login(email: "user@example.com", password: "pwd")
+
+        // 2. Supports IDLE returns true by default
+        let supports = try await client.supportsIdle()
+        XCTAssertTrue(supports)
+
+        // 3. Start idle and yield event
+        let idleStream = try await client.startIdle()
+        let startCount = await client.startIdleCallCount
+        XCTAssertEqual(startCount, 1)
+
+        Task {
+            await client.yieldIdleEvent(.newMailAvailable)
+        }
+
+        var receivedEvent: IdleEvent?
+        for try await event in idleStream {
+            receivedEvent = event
+            break
+        }
+        XCTAssertEqual(receivedEvent, .newMailAvailable)
+
+        // 4. Stop idle
+        try await client.stopIdle()
+        let stopCount = await client.stopIdleCallCount
+        XCTAssertEqual(stopCount, 1)
+
+        // 5. When IDLE is not supported, startIdle throws idleNotSupported
+        await client.setSupportsIdle(false)
+        do {
+            _ = try await client.startIdle()
+            XCTFail("Expected startIdle to throw .idleNotSupported")
+        } catch let error as IMAPClientError {
+            XCTAssertEqual(error, .idleNotSupported)
+        }
     }
 
     // MARK: - NIOIMAPClient Hermetic Offline Preconditions Tests
