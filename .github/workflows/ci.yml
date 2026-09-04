@@ -1,0 +1,59 @@
+name: CI
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+    branches: [ main ]
+
+permissions:
+  contents: read
+
+jobs:
+  build-and-test:
+    name: Build and Test
+    # macos-latest maps to macOS 26 (Tahoe) on GitHub-hosted runners, which provides
+    # the Xcode 26.x series required for the Swift 6.3 toolchain (specified in Package.swift).
+    # macOS 15 only provided Xcode 16 / Swift 6.1, so macos-latest (or pinned macos-26)
+    # is required for swift-tools-version 6.3 compatibility.
+    runs-on: macos-latest
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Select Xcode toolchain
+        # Selects the latest stable Xcode installation (Xcode 26.x containing Swift 6.3).
+        # This configures DEVELOPER_DIR to ensure the correct SDK and Swift compiler are used.
+        uses: maxim-lobanov/setup-xcode@v1
+        with:
+          xcode-version: 'latest-stable'
+
+      - name: Verify Swift and Xcode version
+        run: |
+          echo "Developer Directory: $(xcode-select -p)"
+          xcodebuild -version
+          swift --version
+
+      - name: Cache SwiftPM dependencies
+        # Cache cloned repositories and checked-out dependencies to speed up CI runs.
+        # Invalidates automatically when Package.resolved changes.
+        uses: actions/cache@v4
+        with:
+          path: |
+            .build/checkouts
+            .build/repositories
+          key: ${{ runner.os }}-spm-${{ hashFiles('Package.resolved') }}
+          restore-keys: |
+            ${{ runner.os }}-spm-
+
+      - name: Build
+        # Fails the workflow on any build error.
+        # Warnings remain visible in the workflow logs without failing the build,
+        # avoiding spurious CI breaks if third-party dependencies (swift-nio-imap,
+        # swift-nio-ssl) emit deprecation warnings on newer toolchain releases.
+        run: swift build
+
+      - name: Run Tests
+        # Runs the XCTest suite and fails the workflow on any test failure.
+        run: swift test
