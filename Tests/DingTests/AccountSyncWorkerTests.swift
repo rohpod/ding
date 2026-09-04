@@ -272,6 +272,76 @@ final class AccountSyncWorkerTests: XCTestCase {
         XCTAssertEqual(durations[1].components.seconds, 10)
         XCTAssertEqual(durations[2].components.seconds, 20)
     }
+
+    func testTransientTimeoutAndConnectionFailuresTriggerRetryWithoutPermanentStop() async throws {
+        let account = Account(email: "timeout-test@example.com", provider: .icloud)
+
+        // Part 1: Verify .timeout error produces scheduled retry with backoff and keeps worker active
+        let timeoutClient = FakeIMAPClient(connectError: .timeout)
+        let timeoutDelays = LockProtected<[Duration]>([])
+
+        let timeoutWorker = AccountSyncWorker(
+            account: account,
+            imapClient: timeoutClient,
+            syncStateStore: syncStore,
+            defaultSyncFrequency: .fiveMinutes,
+            passwordProvider: { _ in "secret" },
+            sleepProvider: { delay in
+                timeoutDelays.withLock { $0.append(delay) }
+                try await Task.sleep(nanoseconds: 10_000_000)
+            }
+        )
+
+        await timeoutWorker.start()
+
+        for _ in 0..<50 {
+            if timeoutDelays.get().count >= 2 { break }
+            try await Task.sleep(nanoseconds: 10_000_000)
+        }
+
+        // Worker must remain active throughout transient timeout retries
+        let isTimeoutWorkerActive = await timeoutWorker.active
+        XCTAssertTrue(isTimeoutWorkerActive, "Worker must NOT permanently halt on transient .timeout")
+        let capturedTimeoutDelays = timeoutDelays.get()
+        XCTAssertGreaterThanOrEqual(capturedTimeoutDelays.count, 2)
+        XCTAssertEqual(capturedTimeoutDelays[0].components.seconds, 5)
+        XCTAssertEqual(capturedTimeoutDelays[1].components.seconds, 10)
+
+        await timeoutWorker.stop()
+
+        // Part 2: Verify .connectionFailed error produces scheduled retry with backoff and keeps worker active
+        let connFailClient = FakeIMAPClient(connectError: .connectionFailed(underlying: NSError(domain: "test", code: -1009)))
+        let connFailDelays = LockProtected<[Duration]>([])
+
+        let connFailWorker = AccountSyncWorker(
+            account: account,
+            imapClient: connFailClient,
+            syncStateStore: syncStore,
+            defaultSyncFrequency: .fiveMinutes,
+            passwordProvider: { _ in "secret" },
+            sleepProvider: { delay in
+                connFailDelays.withLock { $0.append(delay) }
+                try await Task.sleep(nanoseconds: 10_000_000)
+            }
+        )
+
+        await connFailWorker.start()
+
+        for _ in 0..<50 {
+            if connFailDelays.get().count >= 2 { break }
+            try await Task.sleep(nanoseconds: 10_000_000)
+        }
+
+        // Worker must remain active throughout transient connection failure retries
+        let isConnFailWorkerActive = await connFailWorker.active
+        XCTAssertTrue(isConnFailWorkerActive, "Worker must NOT permanently halt on transient .connectionFailed")
+        let capturedConnDelays = connFailDelays.get()
+        XCTAssertGreaterThanOrEqual(capturedConnDelays.count, 2)
+        XCTAssertEqual(capturedConnDelays[0].components.seconds, 5)
+        XCTAssertEqual(capturedConnDelays[1].components.seconds, 10)
+
+        await connFailWorker.stop()
+    }
 }
 
 // MARK: - Thread-safe Test Box

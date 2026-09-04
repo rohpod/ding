@@ -83,39 +83,23 @@ mkdir -p "$APP_DIR/Contents/Resources"
 cp "$BIN_PATH" "$APP_DIR/Contents/MacOS/ding"
 chmod +x "$APP_DIR/Contents/MacOS/ding"
 
-# 9. Check for custom app icon in Sources/ding/Resources/
-RESOURCES_SRC="$REPO_ROOT/Sources/ding/Resources"
-ICON_PLIST_ENTRY=""
-ICON_FILE="$(find "$RESOURCES_SRC" -maxdepth 1 -name "*.icns" 2>/dev/null | head -n 1 || true)"
+# Generate and copy AppIcon.icns
+"$ROOT_DIR/scripts/generate-icon.sh" \
+    "$ROOT_DIR/Sources/ding/Resources/AppIcon.png" \
+    "$APP_DIR/Contents/Resources/AppIcon.icns"
 
-if [ -n "$ICON_FILE" ] && [ -f "$ICON_FILE" ]; then
-    ICON_NAME="$(basename "$ICON_FILE")"
-    echo "• Bundling app icon: $ICON_NAME"
-    cp "$ICON_FILE" "$APP_DIR/Contents/Resources/"
-    ICON_PLIST_ENTRY="    <key>CFBundleIconFile</key>
-    <string>$ICON_NAME</string>"
-else
-    echo "• Notice: No .icns app icon found in Sources/ding/Resources/ (using system default)."
-    echo "  // TODO: Add a proper .icns asset to Sources/ding/Resources/ for production packaging."
+# Ensure MenuBarIconTemplate.png exists or generate it
+if [ ! -f "$ROOT_DIR/Sources/ding/Resources/MenuBarIconTemplate.png" ] && [ -f "$ROOT_DIR/Sources/ding/Resources/MenuBarIcon.png" ]; then
+    echo "MenuBarIconTemplate.png missing; generating..."
+    "$ROOT_DIR/scripts/generate-menubar-icon.sh" || true
 fi
 
-# 10. Generate Info.plist
-# Key specifications:
-# - CFBundleName & CFBundleDisplayName: strictly lowercase "ding".
-# - CFBundleIdentifier: "com.ding.mac" matching os.Logger subsystems and Keychain service prefix.
-# - CFBundlePackageType: "APPL" declaring an application bundle.
-# - CFBundleExecutable: "ding" matching the binary name in Contents/MacOS/.
-# - LSMinimumSystemVersion: "13.0" matching macOS 13+ platform target.
-# - LSUIElement: true (<true/>) — CRITICAL: instructs LaunchServices to run this as
-#   an agent/accessory menu bar application with no Dock tile, reinforcing AppDelegate.
-# - NSHumanReadableCopyright: placeholder copyright string.
-#
-# Note on UNUserNotificationCenter:
-# On macOS 13+, local notifications do not require privacy usage strings
-# (like iOS NSUserNotificationsUsageDescription) or legacy keys (NSUserNotificationAlertStyle).
-# UNUserNotificationCenter relies on CFBundleIdentifier, .app structure, and code signing.
-echo "• Generating Info.plist..."
-cat << EOF > "$APP_DIR/Contents/Info.plist"
+if [ -f "$ROOT_DIR/Sources/ding/Resources/MenuBarIconTemplate.png" ]; then
+    echo "Bundling MenuBarIconTemplate.png into Resources..."
+    cp "$ROOT_DIR/Sources/ding/Resources/MenuBarIconTemplate.png" "$APP_DIR/Contents/Resources/MenuBarIconTemplate.png"
+fi
+
+cat << 'EOF' > "$APP_DIR/Contents/Info.plist"
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
@@ -131,10 +115,8 @@ cat << EOF > "$APP_DIR/Contents/Info.plist"
     <string>com.ding.mac</string>
     <key>CFBundleExecutable</key>
     <string>ding</string>
-
-    <!-- Versioning -->
-    <key>CFBundleShortVersionString</key>
-    <string>1.0.0</string>
+    <key>CFBundleIconFile</key>
+    <string>AppIcon</string>
     <key>CFBundleVersion</key>
     <string>1</string>
 
@@ -169,21 +151,9 @@ EOF
 echo "• Ad-hoc code signing ding.app..."
 codesign --force --deep --sign - "$APP_DIR"
 
-# 12. Verification and Summary
-echo ""
-echo "============================================================"
-echo " ding.app packaged successfully!"
-echo " Location:      $APP_DIR"
-echo " Configuration: $BUILD_CONFIG"
-echo " Bundle ID:     com.ding.mac"
-echo " Executable:    $APP_DIR/Contents/MacOS/ding"
-echo "============================================================"
-echo ""
-echo "To launch the application:"
-echo "  open \"$APP_DIR\""
-echo ""
-echo "Gatekeeper / First-launch notes:"
-echo "  Because this bundle is ad-hoc signed, if macOS blocks first launch:"
-echo "    1. Run: xattr -cr \"$APP_DIR\""
-echo "    or"
-echo "    2. In Finder, right-click '$APP_DIR' and click 'Open'."
+echo "ding.app built successfully at $APP_DIR"
+
+if [ "${1:-}" != "--no-run" ]; then
+    echo "Launching ding.app..."
+    open "$APP_DIR"
+fi

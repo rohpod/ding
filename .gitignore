@@ -1,2 +1,12 @@
-.DS_Store
+# Swift Package Manager build artifacts
 .build/
+build/
+.swiftpm/
+
+# macOS
+.DS_Store
+
+# Xcode (in case anyone opens this in Xcode locally)
+*.xcodeproj
+xcuserdata/
+DerivedData/

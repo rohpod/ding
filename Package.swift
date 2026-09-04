@@ -19,6 +19,9 @@ let package = Package(
             dependencies: [
                 .product(name: "NIOIMAP", package: "swift-nio-imap"),
                 .product(name: "NIOSSL", package: "swift-nio-ssl")
+            ],
+            resources: [
+                .process("Resources")
             ]
         ),
         .testTarget(
