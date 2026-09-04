@@ -4,6 +4,7 @@ import SwiftUI
 enum SettingsTab: Hashable {
     case general
     case accounts
+    case about
 }
 
 /// The root settings view displaying a horizontal tab-style layout for configuration.
@@ -23,6 +24,12 @@ struct SettingsView: View {
                     Label("Accounts", systemImage: "at")
                 }
                 .tag(SettingsTab.accounts)
+
+            AboutSettingsView()
+                .tabItem {
+                    Label("About", systemImage: "info.circle")
+                }
+                .tag(SettingsTab.about)
         }
         .tabViewStyle(.automatic)
         .frame(minWidth: 520, minHeight: 340)

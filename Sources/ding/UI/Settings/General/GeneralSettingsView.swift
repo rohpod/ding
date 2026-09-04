@@ -87,17 +87,6 @@ struct GeneralSettingsView: View {
                         .foregroundColor(.red)
                 }
             }
-
-            // MARK: - About Section
-            Section("About") {
-                HStack {
-                    Text("ding")
-                    Spacer()
-                    if let repoURL = URL(string: "https://github.com/rohpod/ding") {
-                        Link("View on GitHub", destination: repoURL)
-                    }
-                }
-            }
         }
         .formStyle(.grouped)
         .task {

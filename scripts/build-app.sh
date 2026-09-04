@@ -16,30 +16,52 @@ set -euo pipefail
 # 1. Resolve repository root directory regardless of current working directory
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
+ROOT_DIR="$REPO_ROOT"
 cd "$REPO_ROOT"
 
-# 2. Parse build configuration argument
+# Validate and read application version
+VERSION_FILE="$REPO_ROOT/VERSION"
+if [ ! -f "$VERSION_FILE" ]; then
+    echo "Error: VERSION file not found at $VERSION_FILE" >&2
+    echo "A valid VERSION file must exist at the repository root." >&2
+    exit 1
+fi
+
+APP_VERSION="$(tr -d '[:space:]' < "$VERSION_FILE")"
+if [ -z "$APP_VERSION" ]; then
+    echo "Error: VERSION file at $VERSION_FILE is empty." >&2
+    echo "Please specify a valid version string (e.g. 0.1.0)." >&2
+    exit 1
+fi
+echo "• Building ding version: $APP_VERSION"
+
+# 2. Parse build configuration and flags
 # Release mode (-c release): Enables compiler optimizations (-O), strips debug
 # overhead, and produces a significantly smaller and faster binary suitable for
 # a 24/7 menu bar utility.
 # Debug mode (-c debug): Unoptimized with full debug symbols, useful when
 # troubleshooting with LLDB or diagnosing runtime crashes.
 BUILD_CONFIG="release"
-if [ $# -ge 1 ]; then
-    case "$1" in
+NO_RUN=false
+
+for arg in "$@"; do
+    case "$arg" in
         release|--release)
             BUILD_CONFIG="release"
             ;;
         debug|--debug)
             BUILD_CONFIG="debug"
             ;;
+        --no-run|no-run)
+            NO_RUN=true
+            ;;
         *)
-            echo "Error: Unknown build configuration '$1'."
-            echo "Usage: $0 [release|debug]"
+            echo "Error: Unknown argument '$arg'."
+            echo "Usage: $0 [release|debug] [--no-run]"
             exit 1
             ;;
     esac
-fi
+done
 
 # 3. Ensure DEVELOPER_DIR points to Xcode if available
 # This prevents SDK/compiler version mismatches if the system default
@@ -99,7 +121,7 @@ if [ -f "$ROOT_DIR/Sources/ding/Resources/MenuBarIconTemplate.png" ]; then
     cp "$ROOT_DIR/Sources/ding/Resources/MenuBarIconTemplate.png" "$APP_DIR/Contents/Resources/MenuBarIconTemplate.png"
 fi
 
-cat << 'EOF' > "$APP_DIR/Contents/Info.plist"
+cat << EOF > "$APP_DIR/Contents/Info.plist"
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
@@ -117,8 +139,10 @@ cat << 'EOF' > "$APP_DIR/Contents/Info.plist"
     <string>ding</string>
     <key>CFBundleIconFile</key>
     <string>AppIcon</string>
+    <key>CFBundleShortVersionString</key>
+    <string>${APP_VERSION}</string>
     <key>CFBundleVersion</key>
-    <string>1</string>
+    <string>${APP_VERSION}</string>
 
     <!-- Minimum System Version (macOS 13+ Ventura) -->
     <key>LSMinimumSystemVersion</key>
@@ -131,7 +155,6 @@ cat << 'EOF' > "$APP_DIR/Contents/Info.plist"
     <!-- Copyright Information -->
     <key>NSHumanReadableCopyright</key>
     <string>Copyright © 2026 ding. All rights reserved.</string>
-$ICON_PLIST_ENTRY
 </dict>
 </plist>
 EOF
@@ -153,7 +176,7 @@ codesign --force --deep --sign - "$APP_DIR"
 
 echo "ding.app built successfully at $APP_DIR"
 
-if [ "${1:-}" != "--no-run" ]; then
+if [ "$NO_RUN" = false ]; then
     echo "Launching ding.app..."
     open "$APP_DIR"
 fi

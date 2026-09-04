@@ -28,6 +28,8 @@ public final class AppPreferences: ObservableObject {
         static let defaultNotificationClickBehavior = "ding.preference.defaultNotificationClickBehavior"
         static let isMenuBarIconVisible = "ding.preference.isMenuBarIconVisible"
         static let isOpenAtLoginEnabled = "ding.preference.isOpenAtLoginEnabled"
+        static let isAutomaticUpdateCheckEnabled = "ding.preference.isAutomaticUpdateCheckEnabled"
+        static let lastUpdateCheckDate = "ding.preference.lastUpdateCheckDate"
     }
 
     private let userDefaults: UserDefaults
@@ -83,6 +85,26 @@ public final class AppPreferences: ObservableObject {
         }
     }
 
+    /// Indicates whether ding is configured to automatically check for updates in the background.
+    ///
+    /// Defaults to `true`.
+    @Published public var isAutomaticUpdateCheckEnabled: Bool {
+        didSet {
+            userDefaults.set(isAutomaticUpdateCheckEnabled, forKey: Keys.isAutomaticUpdateCheckEnabled)
+            Self.logger.debug("Saved isAutomaticUpdateCheckEnabled: \(self.isAutomaticUpdateCheckEnabled, privacy: .public)")
+        }
+    }
+
+    /// The timestamp when an update check was last performed, if any.
+    ///
+    /// Defaults to `nil`.
+    @Published public var lastUpdateCheckDate: Date? {
+        didSet {
+            userDefaults.set(lastUpdateCheckDate, forKey: Keys.lastUpdateCheckDate)
+            Self.logger.debug("Saved lastUpdateCheckDate: \(String(describing: self.lastUpdateCheckDate), privacy: .public)")
+        }
+    }
+
     // MARK: - Initialization
 
     /// Initializes a preferences store backed by the specified `UserDefaults`.
@@ -123,6 +145,16 @@ public final class AppPreferences: ObservableObject {
             self.isOpenAtLoginEnabled = false
         }
 
-        Self.logger.info("AppPreferences initialized (sync: \(self.defaultSyncFrequency.rawValue, privacy: .public), icon: \(self.isMenuBarIconVisible, privacy: .public), loginItem: \(self.isOpenAtLoginEnabled, privacy: .public))")
+        // isAutomaticUpdateCheckEnabled: default true
+        if userDefaults.object(forKey: Keys.isAutomaticUpdateCheckEnabled) != nil {
+            self.isAutomaticUpdateCheckEnabled = userDefaults.bool(forKey: Keys.isAutomaticUpdateCheckEnabled)
+        } else {
+            self.isAutomaticUpdateCheckEnabled = true
+        }
+
+        // lastUpdateCheckDate: default nil
+        self.lastUpdateCheckDate = userDefaults.object(forKey: Keys.lastUpdateCheckDate) as? Date
+
+        Self.logger.info("AppPreferences initialized (sync: \(self.defaultSyncFrequency.rawValue, privacy: .public), icon: \(self.isMenuBarIconVisible, privacy: .public), loginItem: \(self.isOpenAtLoginEnabled, privacy: .public), autoUpdate: \(self.isAutomaticUpdateCheckEnabled, privacy: .public))")
     }
 }

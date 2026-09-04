@@ -88,6 +88,8 @@ final class dingTests: XCTestCase {
         XCTAssertEqual(preferences.defaultNotificationClickBehavior, .doNothing)
         XCTAssertTrue(preferences.isMenuBarIconVisible)
         XCTAssertFalse(preferences.isOpenAtLoginEnabled)
+        XCTAssertTrue(preferences.isAutomaticUpdateCheckEnabled)
+        XCTAssertNil(preferences.lastUpdateCheckDate)
     }
 
     @MainActor
@@ -99,12 +101,16 @@ final class dingTests: XCTestCase {
         }
         defer { testDefaults.removePersistentDomain(forName: suiteName) }
 
+        let testDate = Date(timeIntervalSince1970: 1700000000)
+
         // Set custom values in preferences
         let preferences = AppPreferences(userDefaults: testDefaults)
         preferences.defaultSyncFrequency = .fifteenMinutes
         preferences.defaultNotificationClickBehavior = .openMailApp
         preferences.isMenuBarIconVisible = false
         preferences.isOpenAtLoginEnabled = true
+        preferences.isAutomaticUpdateCheckEnabled = false
+        preferences.lastUpdateCheckDate = testDate
 
         // Create a second preferences instance pointing to the same storage to verify persistence
         let reloaded = AppPreferences(userDefaults: testDefaults)
@@ -112,6 +118,8 @@ final class dingTests: XCTestCase {
         XCTAssertEqual(reloaded.defaultNotificationClickBehavior, .openMailApp)
         XCTAssertFalse(reloaded.isMenuBarIconVisible)
         XCTAssertTrue(reloaded.isOpenAtLoginEnabled)
+        XCTAssertFalse(reloaded.isAutomaticUpdateCheckEnabled)
+        XCTAssertEqual(reloaded.lastUpdateCheckDate?.timeIntervalSince1970, testDate.timeIntervalSince1970)
     }
 
     @MainActor
