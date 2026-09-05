@@ -201,4 +201,97 @@ final class AccountManagerTests: XCTestCase {
             XCTAssertEqual(error as? AccountManagerError, .accountNotFound(missingID))
         }
     }
+
+    // MARK: - In-Memory Password Cache Tests (Issue #16)
+
+    @MainActor
+    func testPasswordCacheHitAvoidsRepeatedKeychainReads() throws {
+        let manager = AccountManager(accountStore: testStore, keychainService: mockKeychain)
+        let account = try manager.addAccount(email: "cache-user@example.com", provider: .gmail, appPassword: "cached-secret")
+
+        // First call: cache miss, reads from Keychain
+        let firstPassword = try manager.password(forAccountID: account.id)
+        XCTAssertEqual(firstPassword, "cached-secret")
+        XCTAssertEqual(mockKeychain.retrieveCalls(forAccountID: account.id), 1)
+
+        // Second call: cache hit, must NOT invoke Keychain retrieve again
+        let secondPassword = try manager.password(forAccountID: account.id)
+        XCTAssertEqual(secondPassword, "cached-secret")
+        XCTAssertEqual(mockKeychain.retrieveCalls(forAccountID: account.id), 1)
+
+        // Third call: still cached
+        let thirdPassword = try manager.password(forAccountID: account.id)
+        XCTAssertEqual(thirdPassword, "cached-secret")
+        XCTAssertEqual(mockKeychain.retrieveCalls(forAccountID: account.id), 1)
+    }
+
+    @MainActor
+    func testPasswordCacheInvalidatedOnAccountDeletion() throws {
+        let manager = AccountManager(accountStore: testStore, keychainService: mockKeychain)
+        let account = try manager.addAccount(email: "delete-cache@example.com", provider: .gmail, appPassword: "delete-me")
+
+        // Populate cache
+        let initial = try manager.password(forAccountID: account.id)
+        XCTAssertEqual(initial, "delete-me")
+        XCTAssertEqual(mockKeychain.retrieveCalls(forAccountID: account.id), 1)
+
+        // Delete account
+        try manager.removeAccount(id: account.id)
+
+        // Retrieval now throws accountNotFound, and cache was cleared
+        XCTAssertThrowsError(try manager.password(forAccountID: account.id)) { error in
+            XCTAssertEqual(error as? AccountManagerError, .accountNotFound(account.id))
+        }
+    }
+
+    @MainActor
+    func testPasswordCacheInvalidatedOnCredentialUpdate() throws {
+        let manager = AccountManager(accountStore: testStore, keychainService: mockKeychain)
+        let account = try manager.addAccount(email: "update-cache@example.com", provider: .outlook, appPassword: "first-secret")
+
+        // Populate cache
+        let first = try manager.password(forAccountID: account.id)
+        XCTAssertEqual(first, "first-secret")
+        XCTAssertEqual(mockKeychain.retrieveCalls(forAccountID: account.id), 1)
+
+        // Update password in manager
+        try manager.updatePassword(forAccountID: account.id, newPassword: "updated-secret")
+
+        // Next password retrieval must re-read from Keychain to avoid returning stale credentials
+        let second = try manager.password(forAccountID: account.id)
+        XCTAssertEqual(second, "updated-secret")
+        XCTAssertEqual(mockKeychain.retrieveCalls(forAccountID: account.id), 2)
+
+        // Subsequent call hits the newly populated cache
+        let third = try manager.password(forAccountID: account.id)
+        XCTAssertEqual(third, "updated-secret")
+        XCTAssertEqual(mockKeychain.retrieveCalls(forAccountID: account.id), 2)
+    }
+
+    @MainActor
+    func testFailedKeychainRetrievalIsNotCached() throws {
+        let manager = AccountManager(accountStore: testStore, keychainService: mockKeychain)
+        let account = try manager.addAccount(email: "retry@example.com", provider: .fastmail, appPassword: "valid-pass")
+
+        // Simulate Keychain failure (e.g. user denied permission or system error)
+        mockKeychain.errorToThrowOnRetrieve = KeychainError.unhandledStatus(errSecAuthFailed)
+
+        // First attempt throws error
+        XCTAssertThrowsError(try manager.password(forAccountID: account.id)) { error in
+            XCTAssertEqual(error as? KeychainError, .unhandledStatus(errSecAuthFailed))
+        }
+        XCTAssertEqual(mockKeychain.retrieveCalls(forAccountID: account.id), 1)
+
+        // Next call should retry Keychain rather than persisting a failure/nil state
+        mockKeychain.errorToThrowOnRetrieve = nil
+
+        let recovered = try manager.password(forAccountID: account.id)
+        XCTAssertEqual(recovered, "valid-pass")
+        XCTAssertEqual(mockKeychain.retrieveCalls(forAccountID: account.id), 2)
+
+        // Now that it succeeded, subsequent calls are cached
+        let cached = try manager.password(forAccountID: account.id)
+        XCTAssertEqual(cached, "valid-pass")
+        XCTAssertEqual(mockKeychain.retrieveCalls(forAccountID: account.id), 2)
+    }
 }

@@ -6,6 +6,14 @@ import Security
 final class InMemoryKeychainService: KeychainServiceProtocol, @unchecked Sendable {
     private let lock = NSLock()
     private var storage: [UUID: String] = [:]
+    private var retrieveCallCount: [UUID: Int] = [:]
+    var errorToThrowOnRetrieve: (any Error)?
+
+    func retrieveCalls(forAccountID id: UUID) -> Int {
+        lock.lock()
+        defer { lock.unlock() }
+        return retrieveCallCount[id, default: 0]
+    }
 
     func store(password: String, forAccountID id: UUID) throws {
         lock.lock()
@@ -19,6 +27,13 @@ final class InMemoryKeychainService: KeychainServiceProtocol, @unchecked Sendabl
     func retrievePassword(forAccountID id: UUID) throws -> String {
         lock.lock()
         defer { lock.unlock() }
+
+        retrieveCallCount[id, default: 0] += 1
+
+        if let error = errorToThrowOnRetrieve {
+            throw error
+        }
+
         guard let password = storage[id] else {
             throw KeychainError.itemNotFound
         }
