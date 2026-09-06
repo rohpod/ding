@@ -81,10 +81,10 @@ fi
 
 # 5. Build executable using SwiftPM
 echo "• Building ding executable with SwiftPM (configuration: $BUILD_CONFIG)..."
-swift build -c "$BUILD_CONFIG"
+swift build -c "$BUILD_CONFIG" ${SWIFT_BUILD_FLAGS:-}
 
 # 6. Locate compiled binary output
-BIN_DIR="$(swift build -c "$BUILD_CONFIG" --show-bin-path)"
+BIN_DIR="$(swift build -c "$BUILD_CONFIG" --show-bin-path ${SWIFT_BUILD_FLAGS:-})"
 BIN_PATH="$BIN_DIR/ding"
 
 if [ ! -f "$BIN_PATH" ]; then

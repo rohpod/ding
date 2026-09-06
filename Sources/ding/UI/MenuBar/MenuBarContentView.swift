@@ -21,6 +21,10 @@ struct MenuBarContentView: View {
 
         Divider()
 
+        Button("Check for Updates…") {
+            SparkleUpdateManager.shared.checkForUpdates()
+        }
+
         Button("Settings…") {
             AppDelegate.shared?.openSettings()
         }

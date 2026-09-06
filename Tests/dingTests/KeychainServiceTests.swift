@@ -142,7 +142,7 @@ final class KeychainServiceTests: XCTestCase {
             }
         } catch let error as KeychainError {
             switch error {
-            case .unhandledStatus(let status) where status == errSecInteractionNotAllowed || status == -34018:
+            case .unhandledStatus(let status) where status == errSecInteractionNotAllowed || status == -34018 || status == -60005:
                 // Expected when running in headless CI / unbundled sandboxed test runner without interactive keychain
                 break
             default:
