@@ -53,6 +53,7 @@ public actor AccountSyncWorker {
 
     private var syncTask: Task<Void, Never>?
     private var isRunning: Bool = false
+    private var isFetchingNewMail: Bool = false
     private var currentRetryCount: Int = 0
     private var hasLoadedBaseline: Bool = false
     private var lastSeenUID: UInt32 = 0
@@ -192,6 +193,13 @@ public actor AccountSyncWorker {
                 }
             } catch let error as IMAPClientError where error == .authenticationFailed {
                 Self.logger.fault("Authentication failed for account \(self.account.id.uuidString, privacy: .public). Halting worker and flagging reauthentication requirement.")
+                isRunning = false
+                notifySyncCycleComplete()
+                await reauthenticationHandler?(account.id)
+                await imapClient.disconnect()
+                break
+            } catch let error as KeychainError where error == .accessDeniedOrCancelled {
+                Self.logger.fault("Keychain access denied or cancelled for account \(self.account.id.uuidString, privacy: .public). Halting worker and flagging reauthentication requirement.")
                 isRunning = false
                 notifySyncCycleComplete()
                 await reauthenticationHandler?(account.id)
@@ -385,6 +393,13 @@ public actor AccountSyncWorker {
     }
 
     private func fetchAndEmitNewMail() async throws {
+        guard !isFetchingNewMail else {
+            Self.logger.debug("fetchAndEmitNewMail already in progress for account \(self.account.id.uuidString, privacy: .public); skipping concurrent call.")
+            return
+        }
+        isFetchingNewMail = true
+        defer { isFetchingNewMail = false }
+
         Self.logger.debug("Checking for new messages arriving after UID \(self.lastSeenUID, privacy: .public)")
         let messages = try await imapClient.fetchNewMessages(sinceUID: self.lastSeenUID)
 

@@ -13,6 +13,9 @@ public enum KeychainError: LocalizedError, Sendable, Equatable {
     /// Data retrieved from the Keychain could not be decoded as UTF-8.
     case invalidData
 
+    /// Authorization to access the Keychain item was denied or cancelled by the user.
+    case accessDeniedOrCancelled
+
     /// An unhandled macOS Keychain Services status was returned.
     case unhandledStatus(OSStatus)
 
@@ -24,6 +27,8 @@ public enum KeychainError: LocalizedError, Sendable, Equatable {
             return "A credential for this account already exists in the Keychain."
         case .invalidData:
             return "The Keychain item contained invalid or corrupt data."
+        case .accessDeniedOrCancelled:
+            return "Keychain access authorization was denied or cancelled."
         case .unhandledStatus(let status):
             let message = SecCopyErrorMessageString(status, nil) as String? ?? "Unknown error"
             return "Keychain operation failed with status \(status): \(message)"
@@ -119,6 +124,9 @@ public final class KeychainService: KeychainServiceProtocol, Sendable {
             if status == errSecDuplicateItem {
                 throw KeychainError.duplicateItem
             }
+            if status == errSecAuthFailed || status == errSecUserCanceled {
+                throw KeychainError.accessDeniedOrCancelled
+            }
             throw KeychainError.unhandledStatus(status)
         }
 
@@ -149,6 +157,10 @@ public final class KeychainService: KeychainServiceProtocol, Sendable {
             if status == errSecItemNotFound {
                 Self.logger.warning("Password not found in Keychain for account: \(id.uuidString, privacy: .public)")
                 throw KeychainError.itemNotFound
+            }
+            if status == errSecAuthFailed || status == errSecUserCanceled {
+                Self.logger.warning("Keychain access denied or cancelled for account: \(id.uuidString, privacy: .public)")
+                throw KeychainError.accessDeniedOrCancelled
             }
             Self.logger.error("Failed to retrieve password for account \(id.uuidString, privacy: .public): status \(status)")
             throw KeychainError.unhandledStatus(status)
@@ -186,6 +198,9 @@ public final class KeychainService: KeychainServiceProtocol, Sendable {
 
         guard status == errSecSuccess else {
             Self.logger.error("Failed to update password for account \(id.uuidString, privacy: .public): status \(status)")
+            if status == errSecAuthFailed || status == errSecUserCanceled {
+                throw KeychainError.accessDeniedOrCancelled
+            }
             throw KeychainError.unhandledStatus(status)
         }
 
@@ -207,6 +222,9 @@ public final class KeychainService: KeychainServiceProtocol, Sendable {
             if status == errSecItemNotFound {
                 Self.logger.warning("Password not found to delete for account: \(id.uuidString, privacy: .public)")
                 throw KeychainError.itemNotFound
+            }
+            if status == errSecAuthFailed || status == errSecUserCanceled {
+                throw KeychainError.accessDeniedOrCancelled
             }
             Self.logger.error("Failed to delete password for account \(id.uuidString, privacy: .public): status \(status)")
             throw KeychainError.unhandledStatus(status)

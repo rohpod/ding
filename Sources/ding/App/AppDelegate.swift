@@ -103,14 +103,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 self?.handleAutomaticUpdateCheckPreferenceChange(isEnabled)
             }
             .store(in: &cancellables)
-
-        AppPreferences.shared.$isAutomaticUpdateInstallEnabled
-            .dropFirst()
-            .receive(on: RunLoop.main)
-            .sink { [weak self] isEnabled in
-                self?.handleAutomaticUpdateInstallPreferenceChange(isEnabled)
-            }
-            .store(in: &cancellables)
     }
 
     // MARK: - Actions
@@ -214,12 +206,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             updateCheckTask?.cancel()
             updateCheckTask = nil
         }
-    }
-
-    /// Handles dynamic toggling of the automatic update installation preference.
-    private func handleAutomaticUpdateInstallPreferenceChange(_ isEnabled: Bool) {
-        Self.logger.info("Automatic update install preference changed (\(isEnabled, privacy: .public)); syncing with Sparkle.")
-        SparkleUpdateManager.shared.applyPreferences(AppPreferences.shared)
     }
 
     /// Action handler for "Quit ding".

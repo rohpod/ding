@@ -152,4 +152,22 @@ final class KeychainServiceTests: XCTestCase {
             XCTFail("Unexpected error: \(error)")
         }
     }
+
+    func testKeychainErrorAccessDeniedOrCancelledDescriptions() {
+        let error = KeychainError.accessDeniedOrCancelled
+        XCTAssertNotNil(error.errorDescription)
+        XCTAssertTrue(error.errorDescription!.contains("denied or cancelled"))
+        XCTAssertEqual(error, .accessDeniedOrCancelled)
+        XCTAssertNotEqual(error, .itemNotFound)
+    }
+
+    func testInMemoryKeychainRetrieveAccessDeniedThrows() {
+        let service = InMemoryKeychainService()
+        let id = UUID()
+        service.errorToThrowOnRetrieve = KeychainError.accessDeniedOrCancelled
+
+        XCTAssertThrowsError(try service.retrievePassword(forAccountID: id)) { error in
+            XCTAssertEqual(error as? KeychainError, .accessDeniedOrCancelled)
+        }
+    }
 }

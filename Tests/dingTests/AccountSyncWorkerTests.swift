@@ -464,6 +464,96 @@ final class AccountSyncWorkerTests: XCTestCase {
 
         await worker.stop()
     }
+
+    func testConcurrentFetchAndEmitNewMailSkipsDuplicateFetch() async throws {
+        let account = Account(email: "race@example.com", provider: .gmail, syncFrequency: .always)
+        let fakeClient = FakeIMAPClient(simulateLatency: .milliseconds(50))
+        await fakeClient.setMailboxStatus(MailboxStatus(uidValidity: 1, uidNext: 100, messageCount: 5, recentCount: 0))
+
+        let receivedEvents = LockProtected<[NewMailEvent]>([])
+        let sleepCalled = LockProtected<Bool>(false)
+
+        let worker = AccountSyncWorker(
+            account: account,
+            imapClient: fakeClient,
+            syncStateStore: syncStore,
+            defaultSyncFrequency: .always,
+            passwordProvider: { _ in "password" },
+            sleepProvider: { _ in
+                sleepCalled.set(true)
+                try await Task.sleep(nanoseconds: 60_000_000_000)
+            },
+            onNewMail: { event in
+                receivedEvents.withLock { $0.append(event) }
+            }
+        )
+
+        await worker.start()
+
+        // Wait until IDLE starts
+        for _ in 0..<50 {
+            let startCount = await fakeClient.startIdleCallCount
+            if startCount > 0 { break }
+            try await Task.sleep(nanoseconds: 10_000_000)
+        }
+
+        // Set canned message
+        let msg = MessageSummary(uid: 105, subject: "Race Test", from: "a@b.com", dateReceived: Date())
+        await fakeClient.setCannedMessages([msg])
+
+        // Trigger two checkNow calls concurrently
+        async let check1: Void = worker.checkNow()
+        async let check2: Void = worker.checkNow()
+        _ = await (check1, check2)
+
+        // Wait a brief moment to ensure all async tasks settle
+        try await Task.sleep(nanoseconds: 50_000_000)
+
+        // Verify only 1 NewMailEvent was emitted
+        let events = receivedEvents.get()
+        XCTAssertEqual(events.count, 1, "Concurrent checks must not produce duplicate NewMailEvents")
+        XCTAssertEqual(events.first?.messages.first?.uid, 105)
+
+        await worker.stop()
+    }
+
+    func testKeychainAccessDeniedStopsWorkerAndInvokesReauth() async throws {
+        let account = Account(email: "denied@example.com", provider: .gmail)
+        let fakeClient = FakeIMAPClient()
+
+        let reauthAccountID = LockProtected<UUID?>(nil)
+        let sleepCalled = LockProtected<Bool>(false)
+
+        let worker = AccountSyncWorker(
+            account: account,
+            imapClient: fakeClient,
+            syncStateStore: syncStore,
+            defaultSyncFrequency: .fiveMinutes,
+            passwordProvider: { _ in
+                throw KeychainError.accessDeniedOrCancelled
+            },
+            reauthenticationHandler: { id in
+                reauthAccountID.set(id)
+            },
+            sleepProvider: { _ in
+                sleepCalled.set(true)
+            }
+        )
+
+        await worker.start()
+
+        for _ in 0..<50 {
+            if reauthAccountID.get() != nil { break }
+            try await Task.sleep(nanoseconds: 10_000_000)
+        }
+
+        let isRunning = await worker.active
+        XCTAssertFalse(isRunning, "Worker must stop immediately upon Keychain access denial")
+        XCTAssertEqual(reauthAccountID.get(), account.id, "Reauthentication handler must be called with the target account ID")
+        XCTAssertFalse(sleepCalled.get(), "Worker must not attempt backoff sleep or automatic retry on Keychain access denial")
+
+        await worker.stop()
+    }
 }
 
 // MARK: - Thread-safe Test Box
