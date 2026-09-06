@@ -36,7 +36,7 @@ import NIOIMAPCore
 /// from all logging statements, even at `.debug` level. Diagnostics log only operation types, server endpoints,
 /// and error classifications to ensure zero sensitive user data is exposed in macOS system logs (`log stream`).
 public actor NIOIMAPClient: IMAPConnecting {
-    private static let logger = Logger(subsystem: "com.ding.mac", category: "IMAPClient")
+    private static let logger = Logger(subsystem: "com.ding.mac.v2", category: "IMAPClient")
 
     /// Shared single-threaded `EventLoopGroup` used across all client instances to minimize RAM and OS threads.
     public static let sharedEventLoopGroup: any EventLoopGroup = MultiThreadedEventLoopGroup(numberOfThreads: 1)
@@ -813,7 +813,7 @@ private final class IMAPResponseHandler: ChannelInboundHandler, @unchecked Senda
         case .fatal(let responseText):
             let error = IMAPClientError.connectionFailed(
                 underlying: NSError(
-                    domain: "com.ding.mac.imap",
+                    domain: "com.ding.mac.v2.imap",
                     code: -1,
                     userInfo: [NSLocalizedDescriptionKey: "Server closed connection: \(responseText.text)"]
                 )

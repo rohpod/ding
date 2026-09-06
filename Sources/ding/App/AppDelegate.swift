@@ -3,10 +3,13 @@ import Combine
 import os
 import UserNotifications
 
-/// The application delegate responsible for managing the menu bar status item and app lifecycle.
+/// The application delegate responsible for managing app lifecycle, background tasks, and notifications.
 @MainActor
 final class AppDelegate: NSObject, NSApplicationDelegate {
-    private static let logger = Logger(subsystem: "com.ding.mac", category: "AppLifecycle")
+    private static let logger = Logger(subsystem: "com.ding.mac.v2", category: "AppLifecycle")
+
+    /// Shared singleton instance accessible by views and controllers.
+    public static private(set) var shared: AppDelegate?
 
     /// Strong reference to the notification click and presentation delegate.
     private let notificationClickHandler = NotificationClickHandler.shared
@@ -20,9 +23,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// Low-priority background task managing periodic automatic update checks.
     private var updateCheckTask: Task<Void, Never>?
 
-    /// The single system status bar item for ding, conditionally created based on user preference.
-    private var statusItem: NSStatusItem?
-
     /// Controller for the settings window, preserved across openings and closings.
     private var settingsWindowController: SettingsWindowController?
 
@@ -31,12 +31,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     override init() {
         super.init()
+        AppDelegate.shared = self
         // Set activation policy as early as possible to prevent a Dock tile from appearing.
         NSApplication.shared.setActivationPolicy(.accessory)
     }
 
     func applicationDidFinishLaunching(_ notification: Notification) {
-        Self.logger.info("ding launched. Ensuring accessory activation policy and setting up status bar item.")
+        Self.logger.info("ding launched. Ensuring accessory activation policy.")
 
         // Configure UNUserNotificationCenter delegate early in launch sequence before any notifications arrive.
         if NotificationPermissionManager.isRunningInAppBundle {
@@ -45,14 +46,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
         // Reinforce accessory activation policy for menu-bar-only operation.
         NSApplication.shared.setActivationPolicy(.accessory)
-
-        // Read isMenuBarIconVisible BEFORE creating the status item.
-        // If false, skip initial creation to honor the persisted hidden-icon preference.
-        if AppPreferences.shared.isMenuBarIconVisible {
-            setupStatusItem()
-        } else {
-            Self.logger.info("Menu bar icon is disabled in user preferences; skipping initial status item creation.")
-        }
 
         // Subscribe to live changes in preferences
         observePreferences()
@@ -100,14 +93,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     /// Observes changes to `AppPreferences` and reacts dynamically.
     private func observePreferences() {
-        AppPreferences.shared.$isMenuBarIconVisible
-            .dropFirst() // Skip the initial value since applicationDidFinishLaunching already handled it
-            .receive(on: RunLoop.main)
-            .sink { [weak self] isVisible in
-                self?.handleMenuBarIconVisibilityChange(isVisible)
-            }
-            .store(in: &cancellables)
-
         AppPreferences.shared.$isAutomaticUpdateCheckEnabled
             .dropFirst()
             .receive(on: RunLoop.main)
@@ -115,106 +100,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 self?.handleAutomaticUpdateCheckPreferenceChange(isEnabled)
             }
             .store(in: &cancellables)
-    }
-
-    /// Dynamically adds or removes the NSStatusItem in response to user preference changes.
-    private func handleMenuBarIconVisibilityChange(_ isVisible: Bool) {
-        if isVisible {
-            if statusItem == nil {
-                Self.logger.info("Menu bar icon preference enabled; creating status item.")
-                setupStatusItem()
-            }
-        } else {
-            if let item = statusItem {
-                Self.logger.info("Menu bar icon preference disabled; removing status item from NSStatusBar.")
-                NSStatusBar.system.removeStatusItem(item)
-                self.statusItem = nil
-            }
-        }
-    }
-
-    // MARK: - Status Bar Item Setup
-
-    /// Configures the status bar item, its icon, and its drop-down menu.
-    private func setupStatusItem() {
-        guard statusItem == nil else { return }
-
-        let item = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
-
-        if let button = item.button {
-            let image = loadMenuBarIcon()
-            button.image = image
-            button.imagePosition = .imageOnly
-        } else {
-            Self.logger.error("Failed to access status item button.")
-        }
-
-        let menu = NSMenu()
-
-        let settingsMenuItem = NSMenuItem(
-            title: "Settings…",
-            action: #selector(openSettings),
-            keyEquivalent: ","
-        )
-        settingsMenuItem.target = self
-        menu.addItem(settingsMenuItem)
-
-        menu.addItem(NSMenuItem.separator())
-
-        let quitMenuItem = NSMenuItem(
-            title: "Quit ding",
-            action: #selector(quit),
-            keyEquivalent: "q"
-        )
-        quitMenuItem.target = self
-        menu.addItem(quitMenuItem)
-
-        item.menu = menu
-        self.statusItem = item
-
-        Self.logger.info("Menu bar status item configured successfully.")
-    }
-
-    /// Loads the custom menu bar template icon asset, configuring it for dynamic macOS tinting.
-    ///
-    /// Supports loading from the `.app` bundle (`Bundle.main`), the SwiftPM resource bundle (`Bundle.module`),
-    /// or via standard named lookup, with a graceful fallback to the SF Symbol "envelope".
-    private func loadMenuBarIcon() -> NSImage? {
-        let resourceName = "MenuBarIconTemplate"
-
-        // 1. Attempt loading directly from the app bundle's Contents/Resources directory
-        if let url = Bundle.main.url(forResource: resourceName, withExtension: "png"),
-           let image = NSImage(contentsOf: url) {
-            image.isTemplate = true
-            image.size = NSSize(width: 18, height: 16)
-            return image
-        }
-
-        // 2. Attempt loading from the SwiftPM resource bundle (used during unbundled runs and development)
-        #if SWIFT_PACKAGE
-        if let url = Bundle.module.url(forResource: resourceName, withExtension: "png"),
-           let image = NSImage(contentsOf: url) {
-            image.isTemplate = true
-            image.size = NSSize(width: 18, height: 16)
-            return image
-        }
-        #endif
-
-        // 3. Attempt loading via standard named image lookup
-        if let image = NSImage(named: NSImage.Name(resourceName)) {
-            image.isTemplate = true
-            image.size = NSSize(width: 18, height: 16)
-            return image
-        }
-
-        // 4. Safe fallback: SF Symbol "envelope"
-        Self.logger.warning("MenuBarIconTemplate image asset not found; falling back to SF Symbol envelope.")
-        let fallback = NSImage(
-            systemSymbolName: "envelope",
-            accessibilityDescription: "ding Mail Notification"
-        )
-        fallback?.isTemplate = true
-        return fallback
     }
 
     // MARK: - Actions

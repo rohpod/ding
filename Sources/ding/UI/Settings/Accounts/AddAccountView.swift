@@ -10,7 +10,7 @@ import SwiftUI
 /// `@MainActor`, safely awaiting asynchronous network calls on actor-isolated IMAP clients.
 @MainActor
 struct AddAccountView: View {
-    private static let logger = Logger(subsystem: "com.ding.mac", category: "AccountsUI")
+    private static let logger = Logger(subsystem: "com.ding.mac.v2", category: "AccountsUI")
 
     @Environment(\.dismiss) private var dismiss
     @ObservedObject private var accountManager: AccountManager

@@ -20,7 +20,7 @@ import os
 ///    or freezing the main application UI.
 @MainActor
 public final class SyncEngine: ObservableObject {
-    private static let logger = Logger(subsystem: "com.ding.mac", category: "SyncEngine")
+    private static let logger = Logger(subsystem: "com.ding.mac.v2", category: "SyncEngine")
 
     /// The shared singleton instance of `SyncEngine`.
     public static let shared = SyncEngine()

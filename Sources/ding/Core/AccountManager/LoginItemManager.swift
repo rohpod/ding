@@ -27,7 +27,7 @@ public enum LoginItemError: LocalizedError, Sendable {
 ///    rather than an opaque boolean, enabling robust error detection and handling.
 @MainActor
 public final class LoginItemManager: Sendable {
-    private static let logger = Logger(subsystem: "com.ding.mac", category: "LoginItem")
+    private static let logger = Logger(subsystem: "com.ding.mac.v2", category: "LoginItem")
 
     /// Shared singleton instance of `LoginItemManager`.
     public static let shared = LoginItemManager()

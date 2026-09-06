@@ -70,7 +70,7 @@ public struct NotificationActionRouter {
 
 /// Delegate for `UNUserNotificationCenter` handling foreground presentation and click routing.
 public final class NotificationClickHandler: NSObject, UNUserNotificationCenterDelegate, Sendable {
-    private static let logger = Logger(subsystem: "com.ding.mac", category: "NotificationClickHandler")
+    private static let logger = Logger(subsystem: "com.ding.mac.v2", category: "NotificationClickHandler")
 
     /// Shared singleton instance of `NotificationClickHandler`.
     public static let shared = NotificationClickHandler()

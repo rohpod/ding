@@ -34,7 +34,7 @@ import os
 /// Critical credential rejection (`.authenticationFailed`) halts the sync loop immediately to prevent account lockout,
 /// sets `needsReauthentication = true` on `AccountManager`, and logs a high-priority diagnostic.
 public actor AccountSyncWorker {
-    private static let logger = Logger(subsystem: "com.ding.mac", category: "AccountSyncWorker")
+    private static let logger = Logger(subsystem: "com.ding.mac.v2", category: "AccountSyncWorker")
 
     /// The account managed by this worker.
     public let account: Account

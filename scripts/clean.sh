@@ -25,10 +25,10 @@ fi
 
 # 3. Reset macOS Notifications and privacy permissions
 echo "• Resetting macOS notification permissions..."
-tccutil reset All com.ding.mac 2>/dev/null || true
+tccutil reset All com.ding.mac.v2 2>/dev/null || true
 
 # 4. Clear saved preferences from UserDefaults
-echo "• Clearing com.ding.mac UserDefaults..."
-defaults delete com.ding.mac 2>/dev/null || true
+echo "• Clearing com.ding.mac.v2 UserDefaults..."
+defaults delete com.ding.mac.v2 2>/dev/null || true
 
 echo "✓ All test state removed! ding is reset to a fresh first-launch state."

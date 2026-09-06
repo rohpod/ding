@@ -121,6 +121,22 @@ if [ -f "$ROOT_DIR/Sources/ding/Resources/MenuBarIconTemplate.png" ]; then
     cp "$ROOT_DIR/Sources/ding/Resources/MenuBarIconTemplate.png" "$APP_DIR/Contents/Resources/MenuBarIconTemplate.png"
 fi
 
+# 9. Copy SwiftPM resource bundle into the .app
+# The SwiftPM-generated Bundle.module accessor looks for ding_ding.bundle at
+# Bundle.main.bundleURL/ding_ding.bundle (the .app root), but placing files there
+# breaks macOS code signing ("unsealed contents present in the bundle root").
+# Instead, we copy it into Contents/Resources/ where code signing expects it.
+# The app's loadMenuBarIcon() resolves the icon via Bundle.main first (which finds
+# loose files in Contents/Resources/), so the resource bundle here is a safety net
+# for any future Bundle.module usage or manual resource bundle lookups.
+RESOURCE_BUNDLE="$BIN_DIR/ding_ding.bundle"
+if [ -d "$RESOURCE_BUNDLE" ]; then
+    echo "• Bundling ding_ding.bundle into Resources..."
+    cp -R "$RESOURCE_BUNDLE" "$APP_DIR/Contents/Resources/ding_ding.bundle"
+else
+    echo "Warning: SwiftPM resource bundle not found at $RESOURCE_BUNDLE" >&2
+fi
+
 cat << EOF > "$APP_DIR/Contents/Info.plist"
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
@@ -134,7 +150,7 @@ cat << EOF > "$APP_DIR/Contents/Info.plist"
     <key>CFBundleDisplayName</key>
     <string>ding</string>
     <key>CFBundleIdentifier</key>
-    <string>com.ding.mac</string>
+    <string>com.ding.mac.v2</string>
     <key>CFBundleExecutable</key>
     <string>ding</string>
     <key>CFBundleIconFile</key>

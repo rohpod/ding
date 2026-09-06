@@ -117,7 +117,7 @@ public struct NotificationContentBuilder {
 /// `NotificationPermissionManager.isRunningInAppBundle`.
 @MainActor
 public final class NotificationService: Sendable {
-    private static let logger = Logger(subsystem: "com.ding.mac", category: "NotificationService")
+    private static let logger = Logger(subsystem: "com.ding.mac.v2", category: "NotificationService")
 
     /// Shared singleton instance of `NotificationService`.
     public static let shared = NotificationService()

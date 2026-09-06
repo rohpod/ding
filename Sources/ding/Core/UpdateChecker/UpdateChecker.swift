@@ -30,7 +30,7 @@ struct GitHubReleasePayload: Decodable, Sendable {
 /// to provide safe, reactive state updates to SwiftUI views on macOS 13+.
 @MainActor
 public final class UpdateChecker: ObservableObject {
-    private static let logger = Logger(subsystem: "com.ding.mac", category: "UpdateChecker")
+    private static let logger = Logger(subsystem: "com.ding.mac.v2", category: "UpdateChecker")
 
     /// The shared singleton instance of `UpdateChecker`.
     public static let shared = UpdateChecker()

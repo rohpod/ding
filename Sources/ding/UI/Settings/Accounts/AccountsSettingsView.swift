@@ -10,7 +10,7 @@ import SwiftUI
 ///   including re-authentication recovery, alias, sync frequency, and notification behavior.
 @MainActor
 struct AccountsSettingsView: View {
-    private static let logger = Logger(subsystem: "com.ding.mac", category: "AccountsUI")
+    private static let logger = Logger(subsystem: "com.ding.mac.v2", category: "AccountsUI")
 
     @ObservedObject private var accountManager: AccountManager
     private let imapClientFactory: @Sendable (MailProvider) -> any IMAPConnecting
@@ -251,7 +251,7 @@ private struct AccountListRow: View {
 
 /// Right panel view displaying configuration fields for the selected account.
 private struct AccountDetailView: View {
-    private static let logger = Logger(subsystem: "com.ding.mac", category: "AccountsUI")
+    private static let logger = Logger(subsystem: "com.ding.mac.v2", category: "AccountsUI")
 
     let account: Account
     @ObservedObject var accountManager: AccountManager
