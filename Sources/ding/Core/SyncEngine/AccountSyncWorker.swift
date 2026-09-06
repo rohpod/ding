@@ -54,6 +54,7 @@ public actor AccountSyncWorker {
     private var syncTask: Task<Void, Never>?
     private var isRunning: Bool = false
     private var currentRetryCount: Int = 0
+    private var hasLoadedBaseline: Bool = false
     private var lastSeenUID: UInt32 = 0
     private var currentUIDValidity: UInt32 = 0
 
@@ -324,6 +325,26 @@ public actor AccountSyncWorker {
     // MARK: - Message Fetching & State Persistence
 
     private func processInitialBaseline(mailboxStatus: MailboxStatus) throws {
+        if hasLoadedBaseline {
+            // State is already held in memory: avoid redundant disk read and JSON decode on every poll cycle.
+            if self.currentUIDValidity != mailboxStatus.uidValidity {
+                // UIDVALIDITY mismatch: server renumbered mailbox. Reset baseline to avoid spamming old history.
+                let baselineUID = mailboxStatus.uidNext > 1 ? mailboxStatus.uidNext - 1 : 0
+                Self.logger.warning("UIDVALIDITY changed (\(self.currentUIDValidity) -> \(mailboxStatus.uidValidity)). Resetting baseline UID to \(baselineUID).")
+
+                let newState = SyncState(
+                    accountID: account.id,
+                    uidValidity: mailboxStatus.uidValidity,
+                    lastSeenUID: baselineUID,
+                    lastSyncedAt: Date()
+                )
+                try syncStateStore.updateState(newState)
+                self.lastSeenUID = baselineUID
+                self.currentUIDValidity = mailboxStatus.uidValidity
+            }
+            return
+        }
+
         let existing = try syncStateStore.state(forAccountID: account.id)
 
         if let state = existing {
@@ -360,6 +381,7 @@ public actor AccountSyncWorker {
             self.lastSeenUID = baselineUID
             self.currentUIDValidity = mailboxStatus.uidValidity
         }
+        self.hasLoadedBaseline = true
     }
 
     private func fetchAndEmitNewMail() async throws {

@@ -121,7 +121,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     @objc func openSettings() {
         Self.logger.info("Action triggered: openSettings")
         if settingsWindowController == nil {
-            settingsWindowController = SettingsWindowController()
+            let controller = SettingsWindowController { [weak self] in
+                Self.logger.info("Releasing SettingsWindowController reference following window close.")
+                self?.settingsWindowController = nil
+            }
+            settingsWindowController = controller
         }
 
         guard let controller = settingsWindowController else {

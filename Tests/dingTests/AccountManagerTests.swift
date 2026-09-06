@@ -15,14 +15,17 @@ final class AccountManagerTests: XCTestCase {
     private var tempDirectoryURL: URL!
     private var testStore: AccountStore!
     private var mockKeychain: InMemoryKeychainService!
+    private var testSyncStore: SyncStateStore!
 
     override func setUp() {
         super.setUp()
         tempDirectoryURL = FileManager.default.temporaryDirectory
             .appendingPathComponent("ding-acc-tests-\(UUID().uuidString)", isDirectory: true)
         let fileURL = tempDirectoryURL.appendingPathComponent("accounts.json")
+        let syncFileURL = tempDirectoryURL.appendingPathComponent("sync_state.json")
         testStore = AccountStore(fileURL: fileURL)
         mockKeychain = InMemoryKeychainService()
+        testSyncStore = SyncStateStore(fileURL: syncFileURL)
     }
 
     override func tearDown() {
@@ -97,8 +100,17 @@ final class AccountManagerTests: XCTestCase {
 
     @MainActor
     func testRemoveAccountSuccess() throws {
-        let manager = AccountManager(accountStore: testStore, keychainService: mockKeychain)
+        let manager = AccountManager(
+            accountStore: testStore,
+            keychainService: mockKeychain,
+            syncStateStore: testSyncStore
+        )
         let account = try manager.addAccount(email: "user@icloud.com", provider: .icloud, appPassword: "password123")
+
+        // Seed sync state for the account
+        let state = SyncState(accountID: account.id, uidValidity: 1, lastSeenUID: 50, lastSyncedAt: Date())
+        try testSyncStore.updateState(state)
+        XCTAssertNotNil(try testSyncStore.state(forAccountID: account.id))
 
         XCTAssertEqual(manager.accounts.count, 1)
 
@@ -115,6 +127,9 @@ final class AccountManagerTests: XCTestCase {
         XCTAssertThrowsError(try mockKeychain.retrievePassword(forAccountID: account.id)) { error in
             XCTAssertEqual(error as? KeychainError, .itemNotFound)
         }
+
+        // Verified removed from SyncStateStore
+        XCTAssertNil(try testSyncStore.state(forAccountID: account.id))
     }
 
     @MainActor

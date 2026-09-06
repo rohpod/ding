@@ -106,4 +106,27 @@ final class SyncStateStoreTests: XCTestCase {
         XCTAssertEqual(loaded.count, 1)
         XCTAssertEqual(loaded.first?.lastSeenUID, 42)
     }
+
+    func testRemoveStateForAccountID() throws {
+        let store = SyncStateStore(fileURL: testFileURL)
+        let accountID1 = UUID()
+        let accountID2 = UUID()
+
+        let state1 = SyncState(accountID: accountID1, uidValidity: 10, lastSeenUID: 100, lastSyncedAt: Date())
+        let state2 = SyncState(accountID: accountID2, uidValidity: 20, lastSeenUID: 200, lastSyncedAt: Date())
+
+        try store.save([state1, state2])
+        XCTAssertEqual(try store.load().count, 2)
+
+        // Remove state1
+        try store.removeState(forAccountID: accountID1)
+
+        let loadedAfterRemoval = try store.load()
+        XCTAssertEqual(loadedAfterRemoval.count, 1)
+        XCTAssertEqual(loadedAfterRemoval.first?.accountID, accountID2)
+
+        // Removing non-existent account ID is a safe no-op
+        XCTAssertNoThrow(try store.removeState(forAccountID: UUID()))
+        XCTAssertEqual(try store.load().count, 1)
+    }
 }

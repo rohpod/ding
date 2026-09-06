@@ -673,6 +673,7 @@ private final class IMAPResponseHandler: ChannelInboundHandler, @unchecked Senda
     private var bufferedCommandResponses: [String: ParsedCommandResponse] = [:]
     private var untaggedBuffers: [String: [ResponsePayload]] = [:]
     private var fetchBuffers: [String: [FetchResponse]] = [:]
+    private var cancelledCommandTags: Set<String> = []
     private var idleContinuation: AsyncThrowingStream<IdleEvent, any Error>.Continuation?
     private var idleStartContinuation: CheckedContinuation<Void, any Error>?
     private var caughtError: (any Error)?
@@ -701,6 +702,9 @@ private final class IMAPResponseHandler: ChannelInboundHandler, @unchecked Senda
             if let continuation = pendingCommands.removeValue(forKey: taggedResponse.tag) {
                 lock.unlock()
                 continuation.resume(returning: parsed)
+            } else if cancelledCommandTags.remove(taggedResponse.tag) != nil {
+                // Command was already cancelled/timed out; drop late response to prevent leak
+                lock.unlock()
             } else {
                 bufferedCommandResponses[taggedResponse.tag] = parsed
                 lock.unlock()
@@ -814,6 +818,7 @@ private final class IMAPResponseHandler: ChannelInboundHandler, @unchecked Senda
         activeCommandTag = tag
         untaggedBuffers[tag] = []
         fetchBuffers[tag] = []
+        cancelledCommandTags.remove(tag)
         lock.unlock()
     }
 
@@ -897,6 +902,7 @@ private final class IMAPResponseHandler: ChannelInboundHandler, @unchecked Senda
         if activeCommandTag == tag {
             activeCommandTag = nil
         }
+        cancelledCommandTags.insert(tag)
         lock.unlock()
         continuation?.resume(throwing: CancellationError())
     }
@@ -915,6 +921,7 @@ private final class IMAPResponseHandler: ChannelInboundHandler, @unchecked Senda
         bufferedCommandResponses.removeAll()
         untaggedBuffers.removeAll()
         fetchBuffers.removeAll()
+        cancelledCommandTags.removeAll()
         activeCommandTag = nil
         lock.unlock()
 

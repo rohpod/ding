@@ -58,6 +58,11 @@ public protocol SyncStateStoreProtocol: Sendable {
     ///
     /// - Parameter state: The new or updated `SyncState`.
     func updateState(_ state: SyncState) throws
+
+    /// Removes the persisted sync state for a single account, if present.
+    ///
+    /// - Parameter id: The account UUID to remove.
+    func removeState(forAccountID id: UUID) throws
 }
 
 /// Manages serialization and deserialization of account sync states to `sync_state.json`
@@ -164,5 +169,16 @@ public final class SyncStateStore: SyncStateStoreProtocol, Sendable {
             states.append(state)
         }
         try save(states)
+    }
+
+    /// Removes the persisted sync state for a single account, if present.
+    public func removeState(forAccountID id: UUID) throws {
+        var states = try load()
+        guard let index = states.firstIndex(where: { $0.accountID == id }) else {
+            return
+        }
+        states.remove(at: index)
+        try save(states)
+        Self.logger.info("Successfully removed sync state for account \(id.uuidString, privacy: .public)")
     }
 }

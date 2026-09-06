@@ -11,8 +11,12 @@ import SwiftUI
 final class SettingsWindowController: NSWindowController, NSWindowDelegate {
     nonisolated private static let logger = Logger(subsystem: DingLog.subsystem, category: "SettingsWindow")
 
+    /// Closure invoked when the settings window closes, allowing callers to release references.
+    var onClose: (@MainActor () -> Void)?
+
     /// Initializes a new settings window controller hosting the SwiftUI `SettingsView`.
-    init() {
+    init(onClose: (@MainActor () -> Void)? = nil) {
+        self.onClose = onClose
         let contentRect = NSRect(x: 0, y: 0, width: 600, height: 400)
         let styleMask: NSWindow.StyleMask = [
             .titled,
@@ -58,6 +62,11 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
     // MARK: - NSWindowDelegate
 
     nonisolated func windowWillClose(_ notification: Notification) {
-        Self.logger.info("Settings window closed by user.")
+        Self.logger.info("Settings window closed by user; tearing down view hierarchy.")
+        Task { @MainActor [weak self] in
+            guard let self = self else { return }
+            self.window?.contentView = nil
+            self.onClose?()
+        }
     }
 }
