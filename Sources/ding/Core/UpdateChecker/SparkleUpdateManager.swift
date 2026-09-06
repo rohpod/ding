@@ -59,12 +59,12 @@ public final class SparkleUpdateManager {
             return
         }
 
-        // Per architectural decision: disable Sparkle's own automatic background update-checking schedule.
-        // Ding's 24-hour background task using UpdateChecker exclusively manages background checking against GitHub Releases API.
-        // Sparkle is retained for the actual update installation and automatic download steps.
+        // Scope note: Update checking is handled exclusively by UpdateChecker against the GitHub Releases API.
+        // Update installation is currently manual (browser redirect to GitHub release page).
+        // Sparkle automatic checking and background downloading are kept permanently disabled/inert.
         updater.automaticallyChecksForUpdates = false
-        updater.automaticallyDownloadsUpdates = preferences.isAutomaticUpdateInstallEnabled
+        updater.automaticallyDownloadsUpdates = false
 
-        Self.logger.info("Applied update preferences to Sparkle (autoCheck: false [custom scheduler active], autoInstall: \(preferences.isAutomaticUpdateInstallEnabled, privacy: .public))")
+        Self.logger.info("Applied update preferences to Sparkle (autoCheck: false [GitHub API active], autoInstall: false [manual browser download])")
     }
 }

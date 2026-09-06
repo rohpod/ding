@@ -68,8 +68,6 @@ struct AboutSettingsView: View {
             Section("Updates") {
                 Toggle("Automatically check for updates", isOn: $preferences.isAutomaticUpdateCheckEnabled)
 
-                Toggle("Automatically install updates", isOn: $preferences.isAutomaticUpdateInstallEnabled)
-
                 HStack {
                     Button(action: {
                         Task {
