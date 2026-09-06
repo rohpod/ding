@@ -327,6 +327,13 @@ private struct AccountDetailView: View {
                         Text(behavior.displayName).tag(behavior)
                     }
                 }
+
+                Toggle("Show in menu bar check list", isOn: Binding(
+                    get: { account.includeInManualCheck },
+                    set: { newValue in
+                        updateAccountIncludeInManualCheck(newValue)
+                    }
+                ))
             }
         }
         .formStyle(.grouped)
@@ -447,6 +454,18 @@ private struct AccountDetailView: View {
             Self.logger.info("Updated notification click behavior for \(self.account.id.uuidString, privacy: .public) to \(newBehavior.rawValue, privacy: .public)")
         } catch {
             Self.logger.error("Failed to update notification click behavior: \(error.localizedDescription, privacy: .public)")
+        }
+    }
+
+    private func updateAccountIncludeInManualCheck(_ newValue: Bool) {
+        guard account.includeInManualCheck != newValue else { return }
+        var updated = account
+        updated.includeInManualCheck = newValue
+        do {
+            try accountManager.updateAccount(updated)
+            Self.logger.info("Updated includeInManualCheck for \(self.account.id.uuidString, privacy: .public) to \(newValue, privacy: .public)")
+        } catch {
+            Self.logger.error("Failed to update includeInManualCheck: \(error.localizedDescription, privacy: .public)")
         }
     }
 

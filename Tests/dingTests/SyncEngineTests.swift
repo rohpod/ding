@@ -251,4 +251,118 @@ final class SyncEngineTests: XCTestCase {
 
         engine.stop()
     }
+
+    @MainActor
+    func testCheckAllMailRespectsIncludeInManualCheck() async throws {
+        let manager = AccountManager(accountStore: testStore, keychainService: mockKeychain)
+        var acc1 = try manager.addAccount(email: "included@gmail.com", provider: .gmail, appPassword: "pwd")
+        acc1.includeInManualCheck = true
+        try manager.updateAccount(acc1)
+
+        var acc2 = try manager.addAccount(email: "excluded@fastmail.com", provider: .fastmail, appPassword: "pwd")
+        acc2.includeInManualCheck = false
+        try manager.updateAccount(acc2)
+
+        let fakeClient1 = FakeIMAPClient()
+        await fakeClient1.setMailboxStatus(MailboxStatus(uidValidity: 1, uidNext: 100, messageCount: 10, recentCount: 0))
+
+        let fakeClient2 = FakeIMAPClient()
+        await fakeClient2.setMailboxStatus(MailboxStatus(uidValidity: 1, uidNext: 100, messageCount: 10, recentCount: 0))
+
+        let acc1ID = acc1.id
+        let acc2ID = acc2.id
+
+        let syncStore = self.syncStore!
+        let sleep1Called = LockProtected<Bool>(false)
+        let sleep2Called = LockProtected<Bool>(false)
+
+        let engine = SyncEngine(
+            accountManager: manager,
+            workerFactory: { account, onNewMail in
+                let client = account.id == acc1ID ? fakeClient1 : fakeClient2
+                let sleepBox = account.id == acc1ID ? sleep1Called : sleep2Called
+                return AccountSyncWorker(
+                    account: account,
+                    imapClient: client,
+                    syncStateStore: syncStore,
+                    defaultSyncFrequency: .fifteenMinutes,
+                    passwordProvider: { _ in "pwd" },
+                    sleepProvider: { _ in
+                        sleepBox.set(true)
+                        try await Task.sleep(nanoseconds: 60_000_000_000)
+                    },
+                    onNewMail: onNewMail
+                )
+            }
+        )
+
+        engine.start()
+
+        // Wait for both workers to complete baseline and enter sleep
+        for _ in 0..<50 {
+            if sleep1Called.get() && sleep2Called.get() { break }
+            try await Task.sleep(nanoseconds: 10_000_000)
+        }
+        XCTAssertTrue(sleep1Called.get())
+        XCTAssertTrue(sleep2Called.get())
+
+        let fetchCount1Before = await fakeClient1.fetchNewMessagesCallCount
+        let fetchCount2Before = await fakeClient2.fetchNewMessagesCallCount
+
+        // Add canned messages
+        let msg1 = MessageSummary(uid: 101, subject: "M1", from: "a@example.com", dateReceived: Date())
+        let msg2 = MessageSummary(uid: 102, subject: "M2", from: "b@example.com", dateReceived: Date())
+        await fakeClient1.setCannedMessages([msg1])
+        await fakeClient2.setCannedMessages([msg2])
+
+        // Call checkAllMail() - should check acc1 (included) but NOT acc2 (excluded)
+        await engine.checkAllMail()
+
+        let fetchCount1After = await fakeClient1.fetchNewMessagesCallCount
+        let fetchCount2After = await fakeClient2.fetchNewMessagesCallCount
+
+        XCTAssertGreaterThan(fetchCount1After, fetchCount1Before, "Included account must be checked")
+        XCTAssertEqual(fetchCount2After, fetchCount2Before, "Excluded account must not be checked by checkAllMail")
+
+        // Call checkMail(accountID:) directly for acc2 - should check acc2 even if excluded from global check
+        await engine.checkMail(accountID: acc2ID)
+
+        // Verify manualCheckAccounts list for menu bar reflects only included accounts
+        XCTAssertEqual(engine.manualCheckAccounts.count, 1)
+        XCTAssertEqual(engine.manualCheckAccounts.first?.id, acc1ID)
+
+        engine.stop()
+    }
+
+    @MainActor
+    func testManualCheckAccountsReflectsIncludeInManualCheckAndUpdatesDynamically() throws {
+        let manager = AccountManager(accountStore: testStore, keychainService: mockKeychain)
+        var acc1 = try manager.addAccount(email: "user1@example.com", provider: .gmail, appPassword: "pwd")
+        acc1.includeInManualCheck = true
+        try manager.updateAccount(acc1)
+
+        var acc2 = try manager.addAccount(email: "user2@example.com", provider: .fastmail, appPassword: "pwd")
+        acc2.includeInManualCheck = false
+        try manager.updateAccount(acc2)
+
+        let engine = SyncEngine(accountManager: manager)
+
+        // Only acc1 is included initially
+        XCTAssertEqual(engine.manualCheckAccounts.count, 1)
+        XCTAssertEqual(engine.manualCheckAccounts.first?.id, acc1.id)
+
+        // Enable manual check for acc2
+        acc2.includeInManualCheck = true
+        try manager.updateAccount(acc2)
+
+        XCTAssertEqual(engine.manualCheckAccounts.count, 2)
+        XCTAssertTrue(engine.manualCheckAccounts.contains(where: { $0.id == acc2.id }))
+
+        // Disable manual check for acc1
+        acc1.includeInManualCheck = false
+        try manager.updateAccount(acc1)
+
+        XCTAssertEqual(engine.manualCheckAccounts.count, 1)
+        XCTAssertEqual(engine.manualCheckAccounts.first?.id, acc2.id)
+    }
 }
