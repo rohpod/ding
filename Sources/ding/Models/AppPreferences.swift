@@ -29,6 +29,7 @@ public final class AppPreferences: ObservableObject {
         static let isMenuBarIconVisible = "ding.preference.isMenuBarIconVisible"
         static let isOpenAtLoginEnabled = "ding.preference.isOpenAtLoginEnabled"
         static let isAutomaticUpdateCheckEnabled = "ding.preference.isAutomaticUpdateCheckEnabled"
+        static let isAutomaticUpdateInstallEnabled = "ding.preference.isAutomaticUpdateInstallEnabled"
         static let lastUpdateCheckDate = "ding.preference.lastUpdateCheckDate"
     }
 
@@ -95,6 +96,16 @@ public final class AppPreferences: ObservableObject {
         }
     }
 
+    /// Indicates whether ding is configured to automatically install downloaded updates in the background.
+    ///
+    /// Defaults to `false`.
+    @Published public var isAutomaticUpdateInstallEnabled: Bool {
+        didSet {
+            userDefaults.set(isAutomaticUpdateInstallEnabled, forKey: Keys.isAutomaticUpdateInstallEnabled)
+            Self.logger.debug("Saved isAutomaticUpdateInstallEnabled: \(self.isAutomaticUpdateInstallEnabled, privacy: .public)")
+        }
+    }
+
     /// The timestamp when an update check was last performed, if any.
     ///
     /// Defaults to `nil`.
@@ -152,9 +163,16 @@ public final class AppPreferences: ObservableObject {
             self.isAutomaticUpdateCheckEnabled = true
         }
 
+        // isAutomaticUpdateInstallEnabled: default false
+        if userDefaults.object(forKey: Keys.isAutomaticUpdateInstallEnabled) != nil {
+            self.isAutomaticUpdateInstallEnabled = userDefaults.bool(forKey: Keys.isAutomaticUpdateInstallEnabled)
+        } else {
+            self.isAutomaticUpdateInstallEnabled = false
+        }
+
         // lastUpdateCheckDate: default nil
         self.lastUpdateCheckDate = userDefaults.object(forKey: Keys.lastUpdateCheckDate) as? Date
 
-        Self.logger.info("AppPreferences initialized (sync: \(self.defaultSyncFrequency.rawValue, privacy: .public), icon: \(self.isMenuBarIconVisible, privacy: .public), loginItem: \(self.isOpenAtLoginEnabled, privacy: .public), autoUpdate: \(self.isAutomaticUpdateCheckEnabled, privacy: .public))")
+        Self.logger.info("AppPreferences initialized (sync: \(self.defaultSyncFrequency.rawValue, privacy: .public), icon: \(self.isMenuBarIconVisible, privacy: .public), loginItem: \(self.isOpenAtLoginEnabled, privacy: .public), autoUpdate: \(self.isAutomaticUpdateCheckEnabled, privacy: .public), autoInstall: \(self.isAutomaticUpdateInstallEnabled, privacy: .public))")
     }
 }
