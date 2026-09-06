@@ -1,13 +1,14 @@
+import AppKit
 import Foundation
 import os
 import Sparkle
 
 /// Service managing the Sparkle update framework lifecycle.
 ///
-/// Follows the same `@MainActor`-isolated singleton pattern as `UpdateChecker` and `AppPreferences`
+/// Follows the same `@MainActor`-isolated singleton pattern as `AppPreferences`
 /// to guarantee thread safety across SwiftUI and AppKit components.
 @MainActor
-public final class SparkleUpdateManager {
+public final class SparkleUpdateManager: ObservableObject {
     private static let logger = Logger(subsystem: DingLog.subsystem, category: "SparkleUpdateManager")
 
     /// The shared singleton instance of `SparkleUpdateManager`.
@@ -19,6 +20,11 @@ public final class SparkleUpdateManager {
     /// Exposes the active `SPUUpdater` instance for preference configuration and manual update triggers.
     public var updater: SPUUpdater? {
         updaterController?.updater
+    }
+
+    /// Indicates whether the updater is initialized and currently capable of checking for updates.
+    public var canCheckForUpdates: Bool {
+        updater?.canCheckForUpdates ?? false
     }
 
     /// Initializes a new `SparkleUpdateManager`.
@@ -50,6 +56,20 @@ public final class SparkleUpdateManager {
         applyPreferences(AppPreferences.shared)
     }
 
+    /// Initiates a manual update check.
+    ///
+    /// Activates the application so that the Sparkle update check window surfaces
+    /// cleanly above other windows even in a menu-bar accessory (`LSUIElement`) app.
+    public func checkForUpdates() {
+        guard let controller = updaterController else {
+            Self.logger.info("Cannot check for updates: Sparkle updater controller is not initialized (running outside .app bundle).")
+            return
+        }
+
+        NSApp.activate(ignoringOtherApps: true)
+        controller.checkForUpdates(nil)
+    }
+
     /// Applies user preferences to the live Sparkle updater instance.
     ///
     /// - Parameter preferences: The active `AppPreferences` store.
@@ -59,12 +79,9 @@ public final class SparkleUpdateManager {
             return
         }
 
-        // Scope note: Update checking is handled exclusively by UpdateChecker against the GitHub Releases API.
-        // Update installation is currently manual (browser redirect to GitHub release page).
-        // Sparkle automatic checking and background downloading are kept permanently disabled/inert.
-        updater.automaticallyChecksForUpdates = false
-        updater.automaticallyDownloadsUpdates = false
+        updater.automaticallyChecksForUpdates = preferences.isAutomaticUpdateCheckEnabled
+        updater.automaticallyDownloadsUpdates = preferences.isAutomaticUpdateInstallEnabled
 
-        Self.logger.info("Applied update preferences to Sparkle (autoCheck: false [GitHub API active], autoInstall: false [manual browser download])")
+        Self.logger.info("Applied update preferences to Sparkle (autoCheck: \(preferences.isAutomaticUpdateCheckEnabled, privacy: .public), autoInstall: \(preferences.isAutomaticUpdateInstallEnabled, privacy: .public))")
     }
 }

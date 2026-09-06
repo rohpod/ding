@@ -29,6 +29,7 @@ public final class AppPreferences: ObservableObject {
         static let isMenuBarIconVisible = "ding.preference.isMenuBarIconVisible"
         static let isOpenAtLoginEnabled = "ding.preference.isOpenAtLoginEnabled"
         static let isAutomaticUpdateCheckEnabled = "ding.preference.isAutomaticUpdateCheckEnabled"
+        static let isAutomaticUpdateInstallEnabled = "ding.preference.isAutomaticUpdateInstallEnabled"
         static let lastUpdateCheckDate = "ding.preference.lastUpdateCheckDate"
     }
 
@@ -95,6 +96,16 @@ public final class AppPreferences: ObservableObject {
         }
     }
 
+    /// Indicates whether ding is configured to automatically download and install updates in the background.
+    ///
+    /// Defaults to `false`.
+    @Published public var isAutomaticUpdateInstallEnabled: Bool {
+        didSet {
+            userDefaults.set(isAutomaticUpdateInstallEnabled, forKey: Keys.isAutomaticUpdateInstallEnabled)
+            Self.logger.debug("Saved isAutomaticUpdateInstallEnabled: \(self.isAutomaticUpdateInstallEnabled, privacy: .public)")
+        }
+    }
+
     /// The timestamp when an update check was last performed, if any.
     ///
     /// Defaults to `nil`.
@@ -109,13 +120,16 @@ public final class AppPreferences: ObservableObject {
 
     /// Initializes a preferences store backed by the specified `UserDefaults`.
     ///
-    /// - Parameter userDefaults: The storage container to use. Defaults to `.standard`.
+    /// If a preference value has not yet been set in the store, the documented
+    /// default value is assigned automatically.
+    ///
+    /// - Parameter userDefaults: The `UserDefaults` instance to read from and write to.
     public init(userDefaults: UserDefaults = .standard) {
         self.userDefaults = userDefaults
 
         // defaultSyncFrequency: default .always
-        if let rawSync = userDefaults.string(forKey: Keys.defaultSyncFrequency),
-           let frequency = SyncFrequency(rawValue: rawSync),
+        if let rawFrequency = userDefaults.string(forKey: Keys.defaultSyncFrequency),
+           let frequency = SyncFrequency(rawValue: rawFrequency),
            frequency != .useDefault {
             self.defaultSyncFrequency = frequency
         } else {
@@ -152,9 +166,16 @@ public final class AppPreferences: ObservableObject {
             self.isAutomaticUpdateCheckEnabled = true
         }
 
+        // isAutomaticUpdateInstallEnabled: default false
+        if userDefaults.object(forKey: Keys.isAutomaticUpdateInstallEnabled) != nil {
+            self.isAutomaticUpdateInstallEnabled = userDefaults.bool(forKey: Keys.isAutomaticUpdateInstallEnabled)
+        } else {
+            self.isAutomaticUpdateInstallEnabled = false
+        }
+
         // lastUpdateCheckDate: default nil
         self.lastUpdateCheckDate = userDefaults.object(forKey: Keys.lastUpdateCheckDate) as? Date
 
-        Self.logger.info("AppPreferences initialized (sync: \(self.defaultSyncFrequency.rawValue, privacy: .public), icon: \(self.isMenuBarIconVisible, privacy: .public), loginItem: \(self.isOpenAtLoginEnabled, privacy: .public), autoUpdate: \(self.isAutomaticUpdateCheckEnabled, privacy: .public))")
+        Self.logger.info("AppPreferences initialized (sync: \(self.defaultSyncFrequency.rawValue, privacy: .public), icon: \(self.isMenuBarIconVisible, privacy: .public), loginItem: \(self.isOpenAtLoginEnabled, privacy: .public), autoCheck: \(self.isAutomaticUpdateCheckEnabled, privacy: .public), autoInstall: \(self.isAutomaticUpdateInstallEnabled, privacy: .public))")
     }
 }

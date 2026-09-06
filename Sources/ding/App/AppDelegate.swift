@@ -20,9 +20,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// Active background task consuming the aggregated new mail event stream.
     private var mailStreamTask: Task<Void, Never>?
 
-    /// Low-priority background task managing periodic automatic update checks.
-    private var updateCheckTask: Task<Void, Never>?
-
     /// Controller for the settings window, preserved across openings and closings.
     private var settingsWindowController: SettingsWindowController?
 
@@ -58,9 +55,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
         // Subscribe to aggregated new mail events
         startObservingNewMail()
-
-        // Schedule silent background update checking if enabled
-        scheduleAutomaticUpdateChecks()
 
         // Request notification permission if not yet determined
         Task {
@@ -99,8 +93,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         AppPreferences.shared.$isAutomaticUpdateCheckEnabled
             .dropFirst()
             .receive(on: RunLoop.main)
-            .sink { [weak self] isEnabled in
-                self?.handleAutomaticUpdateCheckPreferenceChange(isEnabled)
+            .sink { _ in
+                SparkleUpdateManager.shared.applyPreferences(AppPreferences.shared)
+            }
+            .store(in: &cancellables)
+
+        AppPreferences.shared.$isAutomaticUpdateInstallEnabled
+            .dropFirst()
+            .receive(on: RunLoop.main)
+            .sink { _ in
+                SparkleUpdateManager.shared.applyPreferences(AppPreferences.shared)
             }
             .store(in: &cancellables)
     }
@@ -152,71 +154,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         await notificationService.send(for: event, account: account)
     }
 
-    // MARK: - Automatic Update Checking
-
-    /// Configures and starts the low-priority background task for automatic periodic update checks.
-    private func scheduleAutomaticUpdateChecks() {
-        updateCheckTask?.cancel()
-        guard AppPreferences.shared.isAutomaticUpdateCheckEnabled else {
-            Self.logger.info("Automatic update checking is disabled; skipping scheduler.")
-            return
-        }
-
-        updateCheckTask = Task {
-            // Wait briefly after app launch before checking to keep launch lightweight.
-            try? await Task.sleep(nanoseconds: 5 * 1_000_000_000)
-            guard !Task.isCancelled else { return }
-
-            let checkInterval: TimeInterval = 24 * 60 * 60 // 24 hours
-
-            // Check shortly after launch if 24 hours have elapsed since the last check
-            let shouldCheckNow: Bool
-            if let lastDate = AppPreferences.shared.lastUpdateCheckDate {
-                shouldCheckNow = Date().timeIntervalSince(lastDate) >= checkInterval
-            } else {
-                shouldCheckNow = true
-            }
-
-            if shouldCheckNow {
-                Self.logger.info("Performing initial background update check...")
-                _ = await UpdateChecker.shared.checkForUpdate()
-            }
-
-            // Periodic background check loop (every 24 hours)
-            while !Task.isCancelled {
-                try? await Task.sleep(nanoseconds: UInt64(checkInterval) * 1_000_000_000)
-                guard !Task.isCancelled else { break }
-                guard AppPreferences.shared.isAutomaticUpdateCheckEnabled else { break }
-
-                Self.logger.info("Performing periodic 24-hour background update check...")
-                _ = await UpdateChecker.shared.checkForUpdate()
-            }
-        }
-    }
-
-    /// Handles dynamic toggling of the automatic update checking preference.
-    private func handleAutomaticUpdateCheckPreferenceChange(_ isEnabled: Bool) {
-        SparkleUpdateManager.shared.applyPreferences(AppPreferences.shared)
-
-        if isEnabled {
-            Self.logger.info("Automatic update checking enabled in preferences; starting scheduler.")
-            scheduleAutomaticUpdateChecks()
-        } else {
-            Self.logger.info("Automatic update checking disabled in preferences; cancelling background task.")
-            updateCheckTask?.cancel()
-            updateCheckTask = nil
-        }
-    }
-
     /// Action handler for "Quit ding".
     ///
     /// Terminates the application.
     @objc func quit() {
         Self.logger.info("Action triggered: quit")
-
-        // Cancel the background update check task
-        updateCheckTask?.cancel()
-        updateCheckTask = nil
 
         // Cancel the mail stream consumer task
         mailStreamTask?.cancel()
