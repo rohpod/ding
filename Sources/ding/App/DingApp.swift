@@ -2,15 +2,16 @@ import SwiftUI
 
 /// The main application entry point for ding.
 ///
-/// ## Architecture Note: `NSStatusItem` vs `MenuBarExtra`
-/// ding deliberately uses a manual `NSStatusItem` hosted via `AppDelegate` rather than SwiftUI's `MenuBarExtra` scene.
-/// While `MenuBarExtra` is available in macOS 13+, `NSStatusItem` provides:
-/// 1. Deterministic control over menu behavior and AppKit activation policy (`.accessory`).
-/// 2. Seamless dynamic icon swapping and animated status states (needed in later milestones for sync/unread badges).
-/// 3. Precise window management without spurious scene-lifecycle windows being spawned on launch.
+/// ## Architecture Note: Migration to `MenuBarExtra`
+/// ding previously managed a manual `NSStatusItem` hosted via `AppDelegate`.
+/// The app was migrated to SwiftUI's `MenuBarExtra` scene because the manual `NSStatusItem`
+/// setup failed to display an icon when launched from a signed `.build/ding.app` bundle,
+/// and `MenuBarExtra` eliminates custom status item lifecycle management code.
 @main
 struct dingApp: App {
     @NSApplicationDelegateAdaptor(AppDelegate.self) private var appDelegate
+    @ObservedObject private var preferences = AppPreferences.shared
+    @State private var isMenuBarIconVisible: Bool = AppPreferences.shared.isMenuBarIconVisible
 
     init() {
         if CommandLine.arguments.contains("--reset-login-item") {
@@ -20,11 +21,21 @@ struct dingApp: App {
     }
 
     var body: some Scene {
-        // An empty Settings scene satisfies SwiftUI's requirement for a root Scene
-        // while preventing SwiftUI from automatically spawning a default WindowGroup on launch.
-        // The Settings window is managed explicitly via AppKit and SettingsWindowController.
-        Settings {
-            EmptyView()
+        MenuBarExtra(isInserted: $isMenuBarIconVisible) {
+            MenuBarContentView()
+        } label: {
+            Image(nsImage: MenuBarIconLoader.loadMenuBarIcon())
+        }
+        .menuBarExtraStyle(.menu)
+        .onChange(of: isMenuBarIconVisible) { newValue in
+            if AppPreferences.shared.isMenuBarIconVisible != newValue {
+                AppPreferences.shared.isMenuBarIconVisible = newValue
+            }
+        }
+        .onChange(of: preferences.isMenuBarIconVisible) { newValue in
+            if isMenuBarIconVisible != newValue {
+                isMenuBarIconVisible = newValue
+            }
         }
     }
 }

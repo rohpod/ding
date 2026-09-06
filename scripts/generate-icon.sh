@@ -6,7 +6,7 @@ set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 SOURCE_ICON="${1:-"$ROOT_DIR/Sources/ding/Resources/AppIcon.png"}"
-OUTPUT_ICNS="${2:-"$ROOT_DIR/build/ding.app/Contents/Resources/AppIcon.icns"}"
+OUTPUT_ICNS="${2:-"$ROOT_DIR/.build/ding.app/Contents/Resources/AppIcon.icns"}"
 
 if [ ! -f "$SOURCE_ICON" ]; then
     echo "========================================================================"

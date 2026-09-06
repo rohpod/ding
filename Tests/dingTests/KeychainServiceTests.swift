@@ -119,7 +119,7 @@ final class KeychainServiceTests: XCTestCase {
     // MARK: - Real System Keychain Tests
 
     func testSystemKeychainLiveRoundTripIfPermitted() {
-        let testServiceName = "com.ding.mac.tests.\(UUID().uuidString)"
+        let testServiceName = "com.ding.mac.v2.tests.\(UUID().uuidString)"
         let service = KeychainService(serviceName: testServiceName)
         let id = UUID()
 

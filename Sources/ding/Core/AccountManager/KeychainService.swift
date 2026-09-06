@@ -85,7 +85,7 @@ public protocol KeychainServiceProtocol: Sendable {
 /// ensures credentials remain accessible in the background once the user has unlocked the Mac
 /// at least once post-boot, while maintaining complete encryption at rest before initial login.
 public final class KeychainService: KeychainServiceProtocol, Sendable {
-    private static let logger = Logger(subsystem: "com.ding.mac", category: "Keychain")
+    private static let logger = Logger(subsystem: "com.ding.mac.v2", category: "Keychain")
 
     /// Shared singleton instance of `KeychainService`.
     public static let shared = KeychainService()
@@ -95,8 +95,8 @@ public final class KeychainService: KeychainServiceProtocol, Sendable {
 
     /// Initializes a Keychain service instance.
     ///
-    /// - Parameter serviceName: The service identifier. Defaults to `"com.ding.mac.imap-app-password"`.
-    public init(serviceName: String = "com.ding.mac.imap-app-password") {
+    /// - Parameter serviceName: The service identifier. Defaults to `"com.ding.mac.v2.imap-app-password"`.
+    public init(serviceName: String = "com.ding.mac.v2.imap-app-password") {
         self.serviceName = serviceName
     }
 

@@ -12,7 +12,7 @@ Packages the compiled SwiftPM executable into a native macOS application bundle 
 ### When to Use
 Use this script whenever you need to test functionality that requires a genuine macOS `.app` bundle identity:
 * **SMAppService (Open at Login)**: macOS 13+ requires a code-signed application bundle to register items in **System Settings > General > Login Items**.
-* **UNUserNotificationCenter (Notifications)**: Notification permissions, banner presentations, sound alerts, and click responses require a recognized bundle identifier (`com.ding.mac`) and code signing.
+* **UNUserNotificationCenter (Notifications)**: Notification permissions, banner presentations, sound alerts, and click responses require a recognized bundle identifier (`com.ding.mac.v2`) and code signing.
 * **Keychain "Always Allow" Persistence**: Ad-hoc code signing (`codesign -s -`) provides a stable cryptographic `cdhash` and designated requirement so that macOS Keychain remembers authorization across repeated launches of the same built application.
 * **Spotlight / Applications Relaunching**: Verifies `applicationShouldHandleReopen` behavior when launching the `.app` bundle while already running.
 
@@ -58,8 +58,8 @@ Resets local testing state to simulate a completely fresh "first launch" environ
 ### What it Does
 1. Terminates any running `ding` process (`pkill -x ding`).
 2. Unregisters any registered macOS Login Item (`--reset-login-item` via `.build/ding.app`).
-3. Resets macOS notification and TCC privacy permissions (`tccutil reset All com.ding.mac`).
-4. Clears saved user preferences from macOS `UserDefaults` (`defaults delete com.ding.mac`).
+3. Resets macOS notification and TCC privacy permissions (`tccutil reset All com.ding.mac.v2`).
+4. Clears saved user preferences from macOS `UserDefaults` (`defaults delete com.ding.mac.v2`).
 
 ### How to Run
 

@@ -18,7 +18,7 @@ public enum NotificationError: LocalizedError, Sendable {
 /// Manages querying system notification permissions, requesting authorization, and deep-linking to macOS System Settings.
 @MainActor
 public final class NotificationPermissionManager: Sendable {
-    private static let logger = Logger(subsystem: "com.ding.mac", category: "Notifications")
+    private static let logger = Logger(subsystem: "com.ding.mac.v2", category: "Notifications")
 
     /// Shared singleton instance of `NotificationPermissionManager`.
     public static let shared = NotificationPermissionManager()
