@@ -172,7 +172,7 @@ cat << EOF > "$APP_DIR/Contents/Info.plist"
     <key>SUFeedURL</key>
     <string>https://raw.githubusercontent.com/rohpod/ding/main/appcast.xml</string>
     <key>SUPublicEDKey</key>
-    <string>PLACEHOLDER_ED25519_PUBLIC_KEY</string>
+    <string>M5VfHnrqJzBMrAfdVnBglAUWFOAx6olFb7dV9g2lDDw=</string>
     <key>SUEnableAutomaticChecks</key>
     <true/>
 

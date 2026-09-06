@@ -6,6 +6,19 @@
         <description>Most recent releases and updates for ding.</description>
         <language>en</language>
         <item>
+            <title>ding v0.2.0</title>
+            <pubDate>Sun, 06 Sep 2026 19:21:42 +0530</pubDate>
+            <sparkle:version>0.2.0</sparkle:version>
+            <sparkle:shortVersionString>0.2.0</sparkle:shortVersionString>
+            <sparkle:minimumSystemVersion>13.0</sparkle:minimumSystemVersion>
+            <enclosure
+                url="https://github.com/rohpod/ding/releases/download/v0.2.0/ding-0.2.0.zip"
+                sparkle:edSignature="RXVPcQuR+kqaCac/+uoHVTrShZw2KQSC9eBzZBeTkFy4LJW26vspTiJNeYhPjFMvtGaEDVliukpTBvD9la4UAw=="
+                length="5938539"
+                type="application/octet-stream" />
+        </item>
+
+        <item>
             <title>ding v0.1.0</title>
             <pubDate>Sun, 06 Sep 2026 17:55:00 +0530</pubDate>
             <sparkle:version>0.1.0</sparkle:version>
