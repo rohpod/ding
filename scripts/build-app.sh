@@ -168,6 +168,14 @@ cat << EOF > "$APP_DIR/Contents/Info.plist"
     <key>LSUIElement</key>
     <true/>
 
+    <!-- Sparkle Automatic Update Configuration -->
+    <key>SUFeedURL</key>
+    <string>https://raw.githubusercontent.com/rohpod/ding/main/appcast.xml</string>
+    <key>SUPublicEDKey</key>
+    <string>PLACEHOLDER_ED25519_PUBLIC_KEY</string>
+    <key>SUEnableAutomaticChecks</key>
+    <true/>
+
     <!-- Copyright Information -->
     <key>NSHumanReadableCopyright</key>
     <string>Copyright © 2026 ding. All rights reserved.</string>
@@ -175,7 +183,53 @@ cat << EOF > "$APP_DIR/Contents/Info.plist"
 </plist>
 EOF
 
-# 11. Ad-hoc Code Signing
+# 11. Embed Sparkle.framework into Contents/Frameworks
+mkdir -p "$APP_DIR/Contents/Frameworks"
+
+SPARKLE_FRAMEWORK_SRC=""
+if [ -d "$BIN_DIR/Sparkle.framework" ]; then
+    SPARKLE_FRAMEWORK_SRC="$BIN_DIR/Sparkle.framework"
+elif [ -d "$REPO_ROOT/.build/artifacts/sparkle/Sparkle/Sparkle.xcframework/macos-arm64_x86_64/Sparkle.framework" ]; then
+    SPARKLE_FRAMEWORK_SRC="$REPO_ROOT/.build/artifacts/sparkle/Sparkle/Sparkle.xcframework/macos-arm64_x86_64/Sparkle.framework"
+else
+    SPARKLE_FRAMEWORK_SRC="$(find "$REPO_ROOT/.build" -name "Sparkle.framework" -type d | grep -v "\.app/" | head -n 1 || true)"
+fi
+
+if [ -n "$SPARKLE_FRAMEWORK_SRC" ] && [ -d "$SPARKLE_FRAMEWORK_SRC" ]; then
+    echo "• Embedding Sparkle.framework from $SPARKLE_FRAMEWORK_SRC..."
+    rm -rf "$APP_DIR/Contents/Frameworks/Sparkle.framework"
+    cp -R "$SPARKLE_FRAMEWORK_SRC" "$APP_DIR/Contents/Frameworks/Sparkle.framework"
+else
+    echo "Error: Sparkle.framework not found in build directory." >&2
+    exit 1
+fi
+
+# 12. Ensure main executable rpath includes @executable_path/../Frameworks
+# Allows the dynamic linker to locate Sparkle.framework in Contents/Frameworks at runtime.
+if ! otool -l "$APP_DIR/Contents/MacOS/ding" | grep -q "@executable_path/\.\./Frameworks"; then
+    echo "• Adding @executable_path/../Frameworks to rpath..."
+    install_name_tool -add_rpath "@executable_path/../Frameworks" "$APP_DIR/Contents/MacOS/ding"
+fi
+
+# 13. Code-sign embedded framework and nested helpers
+# Inside-out signing ensures all nested XPC services, helper apps, and binaries have valid signatures.
+echo "• Code signing embedded Sparkle.framework..."
+if [ -d "$APP_DIR/Contents/Frameworks/Sparkle.framework/Versions/Current/XPCServices" ]; then
+    for xpc in "$APP_DIR/Contents/Frameworks/Sparkle.framework/Versions/Current/XPCServices/"*.xpc; do
+        if [ -d "$xpc" ]; then
+            codesign --force --sign - "$xpc"
+        fi
+    done
+fi
+if [ -d "$APP_DIR/Contents/Frameworks/Sparkle.framework/Versions/Current/Updater.app" ]; then
+    codesign --force --deep --sign - "$APP_DIR/Contents/Frameworks/Sparkle.framework/Versions/Current/Updater.app"
+fi
+if [ -f "$APP_DIR/Contents/Frameworks/Sparkle.framework/Versions/Current/Autoupdate" ]; then
+    codesign --force --sign - "$APP_DIR/Contents/Frameworks/Sparkle.framework/Versions/Current/Autoupdate"
+fi
+codesign --force --deep --sign - "$APP_DIR/Contents/Frameworks/Sparkle.framework"
+
+# 14. Ad-hoc Code Signing
 # The '-' identity indicates ad-hoc signing (free, self-signed, no Apple Developer ID needed).
 #
 # Purpose:

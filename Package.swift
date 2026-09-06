@@ -11,14 +11,16 @@ let package = Package(
     ],
     dependencies: [
         .package(url: "https://github.com/apple/swift-nio-imap.git", from: "0.4.0"),
-        .package(url: "https://github.com/apple/swift-nio-ssl.git", from: "2.25.0")
+        .package(url: "https://github.com/apple/swift-nio-ssl.git", from: "2.25.0"),
+        .package(url: "https://github.com/sparkle-project/Sparkle", from: "2.6.0")
     ],
     targets: [
         .executableTarget(
             name: "ding",
             dependencies: [
                 .product(name: "NIOIMAP", package: "swift-nio-imap"),
-                .product(name: "NIOSSL", package: "swift-nio-ssl")
+                .product(name: "NIOSSL", package: "swift-nio-ssl"),
+                .product(name: "Sparkle", package: "Sparkle")
             ],
             resources: [
                 .process("Resources")

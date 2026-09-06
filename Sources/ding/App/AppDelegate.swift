@@ -47,6 +47,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // Reinforce accessory activation policy for menu-bar-only operation.
         NSApplication.shared.setActivationPolicy(.accessory)
 
+        // Start Sparkle updater framework if running in an app bundle
+        SparkleUpdateManager.shared.startIfNeeded()
+
         // Subscribe to live changes in preferences
         observePreferences()
 
@@ -98,6 +101,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             .receive(on: RunLoop.main)
             .sink { [weak self] isEnabled in
                 self?.handleAutomaticUpdateCheckPreferenceChange(isEnabled)
+            }
+            .store(in: &cancellables)
+
+        AppPreferences.shared.$isAutomaticUpdateInstallEnabled
+            .dropFirst()
+            .receive(on: RunLoop.main)
+            .sink { [weak self] isEnabled in
+                self?.handleAutomaticUpdateInstallPreferenceChange(isEnabled)
             }
             .store(in: &cancellables)
     }
@@ -189,6 +200,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     /// Handles dynamic toggling of the automatic update checking preference.
     private func handleAutomaticUpdateCheckPreferenceChange(_ isEnabled: Bool) {
+        SparkleUpdateManager.shared.applyPreferences(AppPreferences.shared)
+
         if isEnabled {
             Self.logger.info("Automatic update checking enabled in preferences; starting scheduler.")
             scheduleAutomaticUpdateChecks()
@@ -197,6 +210,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             updateCheckTask?.cancel()
             updateCheckTask = nil
         }
+    }
+
+    /// Handles dynamic toggling of the automatic update installation preference.
+    private func handleAutomaticUpdateInstallPreferenceChange(_ isEnabled: Bool) {
+        Self.logger.info("Automatic update install preference changed (\(isEnabled, privacy: .public)); syncing with Sparkle.")
+        SparkleUpdateManager.shared.applyPreferences(AppPreferences.shared)
     }
 
     /// Action handler for "Quit ding".

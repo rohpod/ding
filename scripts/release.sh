@@ -140,7 +140,100 @@ echo "• Generating SHA-256 checksum file ($CHECKSUM_NAME)..."
     shasum -a 256 -c "$CHECKSUM_NAME" >/dev/null 2>&1
 )
 
-# 10. Report artifact details and next steps
+# 10. Locate Sparkle's sign_update tool and generate EdDSA signature
+SIGN_UPDATE_BIN=""
+if [ -f "$REPO_ROOT/.build/artifacts/sparkle/Sparkle/bin/sign_update" ]; then
+    SIGN_UPDATE_BIN="$REPO_ROOT/.build/artifacts/sparkle/Sparkle/bin/sign_update"
+elif [ -f "$REPO_ROOT/.build/checkouts/Sparkle/bin/sign_update" ]; then
+    SIGN_UPDATE_BIN="$REPO_ROOT/.build/checkouts/Sparkle/bin/sign_update"
+else
+    SIGN_UPDATE_BIN="$(find "$REPO_ROOT/.build" -name "sign_update" -type f -perm +111 2>/dev/null | grep -v "\.dSYM" | head -n 1 || true)"
+fi
+
+ED_SIGNATURE=""
+if [ -n "$SIGN_UPDATE_BIN" ] && [ -x "$SIGN_UPDATE_BIN" ]; then
+    echo "• Found Sparkle sign_update tool at: $SIGN_UPDATE_BIN"
+    echo "• Signing $ZIP_NAME with EdDSA private key..."
+    ED_SIGNATURE="$("$SIGN_UPDATE_BIN" -p "$ZIP_PATH" 2>/dev/null || true)"
+    if [ -z "$ED_SIGNATURE" ]; then
+        echo "⚠️  Warning: Sparkle sign_update failed (no ed25519 private key found in Keychain)." >&2
+        echo "   Please run '$REPO_ROOT/.build/artifacts/sparkle/Sparkle/bin/generate_keys' to generate your keypair." >&2
+        ED_SIGNATURE="PLACEHOLDER_ED25519_SIGNATURE"
+    else
+        echo "• Successfully signed release archive with EdDSA key."
+    fi
+else
+    echo "⚠️  Warning: Sparkle sign_update tool not found in .build/." >&2
+    ED_SIGNATURE="PLACEHOLDER_ED25519_SIGNATURE"
+fi
+
+# 11. Generate or update appcast.xml at repository root
+APPCAST_PATH="$REPO_ROOT/appcast.xml"
+ZIP_LENGTH="$(stat -f%z "$ZIP_PATH" 2>/dev/null || wc -c < "$ZIP_PATH" | tr -d ' ')"
+PUB_DATE="$(LC_ALL=C date +"%a, %d %b %Y %H:%M:%S %z")"
+DOWNLOAD_URL="https://github.com/rohpod/ding/releases/download/v${APP_VERSION}/ding-${APP_VERSION}.zip"
+
+NEW_ITEM="        <item>
+            <title>ding v${APP_VERSION}</title>
+            <pubDate>${PUB_DATE}</pubDate>
+            <sparkle:version>${APP_VERSION}</sparkle:version>
+            <sparkle:shortVersionString>${APP_VERSION}</sparkle:shortVersionString>
+            <sparkle:minimumSystemVersion>13.0</sparkle:minimumSystemVersion>
+            <enclosure
+                url=\"${DOWNLOAD_URL}\"
+                sparkle:edSignature=\"${ED_SIGNATURE}\"
+                length=\"${ZIP_LENGTH}\"
+                type=\"application/octet-stream\" />
+        </item>"
+
+if [ ! -f "$APPCAST_PATH" ]; then
+    echo "• Creating initial appcast.xml at $APPCAST_PATH..."
+    cat << EOF > "$APPCAST_PATH"
+<?xml version="1.0" encoding="utf-8"?>
+<rss version="2.0" xmlns:sparkle="http://www.andymatuschak.org/xml-namespaces/sparkle" xmlns:dc="http://purl.org/dc/elements/1.1/">
+    <channel>
+        <title>ding Changelog</title>
+        <link>https://raw.githubusercontent.com/rohpod/ding/main/appcast.xml</link>
+        <description>Most recent releases and updates for ding.</description>
+        <language>en</language>
+$NEW_ITEM
+    </channel>
+</rss>
+EOF
+else
+    echo "• Updating existing appcast.xml with entry for v${APP_VERSION}..."
+    python3 -c '
+import sys
+
+appcast_path = sys.argv[1]
+new_item = sys.argv[2]
+version = sys.argv[3]
+
+with open(appcast_path, "r", encoding="utf-8") as f:
+    content = f.read()
+
+version_tag = f"<sparkle:version>{version}</sparkle:version>"
+if version_tag in content:
+    print(f"• Version {version} already present in {appcast_path}; skipping duplicate entry.")
+    sys.exit(0)
+
+if "<item>" in content:
+    idx = content.find("<item>")
+    new_content = content[:idx] + new_item.strip() + "\n\n        " + content[idx:]
+elif "</channel>" in content:
+    idx = content.find("</channel>")
+    new_content = content[:idx] + new_item.strip() + "\n    " + content[idx:]
+else:
+    print(f"Error: Malformed appcast XML in {appcast_path}", file=sys.stderr)
+    sys.exit(1)
+
+with open(appcast_path, "w", encoding="utf-8") as f:
+    f.write(new_content)
+print(f"• Prepended v{version} entry into {appcast_path}")
+' "$APPCAST_PATH" "$NEW_ITEM" "$APP_VERSION"
+fi
+
+# 12. Report artifact details and next steps
 ZIP_SIZE="$(du -h "$ZIP_PATH" | awk '{print $1}')"
 SHA256_HASH="$(awk '{print $1}' "$CHECKSUM_PATH")"
 
@@ -152,14 +245,23 @@ echo "Version:       $APP_VERSION"
 echo "Archive:       $ZIP_PATH ($ZIP_SIZE)"
 echo "Checksum File: $CHECKSUM_PATH"
 echo "SHA-256:       $SHA256_HASH"
+echo "Appcast File:  $APPCAST_PATH"
+echo "EdDSA Sig:     $ED_SIGNATURE"
 echo ""
 echo "Next steps to publish this release:"
 echo ""
-echo "1. Create and push a git tag matching the version:"
+echo "1. Commit and push appcast.xml to the main branch:"
+echo "   git add appcast.xml"
+echo "   git commit -m \"chore: update appcast for v${APP_VERSION}\""
+echo "   git push origin main"
+echo "   ⚠️  REMINDER: appcast.xml MUST be pushed to the 'main' branch"
+echo "   for SUFeedURL to serve the update to users!"
+echo ""
+echo "2. Create and push a git tag matching the version:"
 echo "   git tag v${APP_VERSION}"
 echo "   git push origin v${APP_VERSION}"
 echo ""
-echo "2. Publish the GitHub Release:"
+echo "3. Publish the GitHub Release:"
 echo "   • Option A: Manual Web UI (Primary)"
 echo "     a. Visit: https://github.com/rohpod/ding/releases/new"
 echo "     b. Choose tag: v${APP_VERSION}"
