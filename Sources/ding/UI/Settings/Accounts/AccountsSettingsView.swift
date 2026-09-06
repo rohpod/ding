@@ -260,6 +260,7 @@ private struct AccountDetailView: View {
     @State private var newAppPassword: String = ""
     @State private var reauthErrorMessage: String?
     @State private var isUpdatingPassword: Bool = false
+    @State private var isCheckingNow: Bool = false
     @FocusState private var isAliasFocused: Bool
 
     var body: some View {
@@ -326,6 +327,37 @@ private struct AccountDetailView: View {
                     ForEach(NotificationClickBehavior.allCases, id: \.self) { behavior in
                         Text(behavior.displayName).tag(behavior)
                     }
+                }
+
+                Toggle("Include in manual check", isOn: Binding(
+                    get: { account.includeInManualCheck },
+                    set: { newValue in
+                        updateAccountIncludeInManualCheck(newValue)
+                    }
+                ))
+
+                HStack {
+                    Button(action: {
+                        Task {
+                            isCheckingNow = true
+                            await SyncEngine.shared.checkMail(accountID: account.id)
+                            isCheckingNow = false
+                        }
+                    }) {
+                        Text("Check Now")
+                    }
+                    .disabled(isCheckingNow)
+
+                    if isCheckingNow {
+                        ProgressView()
+                            .controlSize(.small)
+                            .padding(.leading, 6)
+                        Text("Checking…")
+                            .font(.caption)
+                            .foregroundColor(.secondary)
+                    }
+
+                    Spacer()
                 }
             }
         }
@@ -447,6 +479,18 @@ private struct AccountDetailView: View {
             Self.logger.info("Updated notification click behavior for \(self.account.id.uuidString, privacy: .public) to \(newBehavior.rawValue, privacy: .public)")
         } catch {
             Self.logger.error("Failed to update notification click behavior: \(error.localizedDescription, privacy: .public)")
+        }
+    }
+
+    private func updateAccountIncludeInManualCheck(_ newValue: Bool) {
+        guard account.includeInManualCheck != newValue else { return }
+        var updated = account
+        updated.includeInManualCheck = newValue
+        do {
+            try accountManager.updateAccount(updated)
+            Self.logger.info("Updated includeInManualCheck for \(self.account.id.uuidString, privacy: .public) to \(newValue, privacy: .public)")
+        } catch {
+            Self.logger.error("Failed to update includeInManualCheck: \(error.localizedDescription, privacy: .public)")
         }
     }
 

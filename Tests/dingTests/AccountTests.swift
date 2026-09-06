@@ -14,6 +14,7 @@ final class AccountTests: XCTestCase {
         XCTAssertNil(account.alias)
         XCTAssertEqual(account.syncFrequency, .useDefault)
         XCTAssertEqual(account.notificationClickBehavior, .useDefault)
+        XCTAssertTrue(account.includeInManualCheck)
         XCTAssertLessThanOrEqual(account.dateAdded, Date())
     }
 
@@ -131,6 +132,56 @@ final class AccountTests: XCTestCase {
 
         XCTAssertTrue(decoded.needsReauthentication)
         XCTAssertEqual(decoded, account)
+    }
+
+    func testAccountIncludeInManualCheckDefaultAndMutation() {
+        var account = Account(email: "test@gmail.com", provider: .gmail)
+        XCTAssertTrue(account.includeInManualCheck)
+
+        account.includeInManualCheck = false
+        XCTAssertFalse(account.includeInManualCheck)
+    }
+
+    func testAccountCodableWithIncludeInManualCheckFalse() throws {
+        let account = Account(
+            id: UUID(),
+            email: "manualcheck@icloud.com",
+            provider: .icloud,
+            includeInManualCheck: false
+        )
+
+        let encoder = JSONEncoder()
+        encoder.dateEncodingStrategy = .iso8601
+        let data = try encoder.encode(account)
+
+        let decoder = JSONDecoder()
+        decoder.dateDecodingStrategy = .iso8601
+        let decoded = try decoder.decode(Account.self, from: data)
+
+        XCTAssertFalse(decoded.includeInManualCheck)
+        XCTAssertEqual(decoded, account)
+    }
+
+    func testAccountCodableBackwardsCompatibilityWithoutIncludeInManualCheck() throws {
+        let legacyJSON = """
+        {
+            "id": "E621E1F8-C36C-495A-93FC-0C247A3E6E5F",
+            "email": "legacy@gmail.com",
+            "provider": "gmail",
+            "alias": "Old Account",
+            "syncFrequency": "fifteenMinutes",
+            "notificationClickBehavior": "openMailApp",
+            "needsReauthentication": false,
+            "dateAdded": "2026-09-01T00:00:00Z"
+        }
+        """
+
+        let decoder = JSONDecoder()
+        decoder.dateDecodingStrategy = .iso8601
+        let decoded = try decoder.decode(Account.self, from: Data(legacyJSON.utf8))
+
+        XCTAssertEqual(decoded.email, "legacy@gmail.com")
+        XCTAssertTrue(decoded.includeInManualCheck, "Missing includeInManualCheck key must decode as true")
     }
 
     @MainActor

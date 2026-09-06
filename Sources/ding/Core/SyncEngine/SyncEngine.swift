@@ -120,6 +120,36 @@ public final class SyncEngine: ObservableObject {
         }
     }
 
+    // MARK: - Manual Mail Checking
+
+    /// Forces an immediate manual check for mail on a specific account, resetting its poll or IDLE cycle.
+    ///
+    /// - Parameter accountID: The unique identifier of the account to check.
+    public func checkMail(accountID: UUID) async {
+        guard let worker = workers[accountID] else {
+            Self.logger.warning("Attempted to check mail for unregistered account: \(accountID.uuidString, privacy: .public)")
+            return
+        }
+        Self.logger.info("Triggering manual mail check for account: \(accountID.uuidString, privacy: .public)")
+        await worker.checkNow()
+    }
+
+    /// Forces an immediate manual check for mail concurrently across all accounts configured to participate in manual checks.
+    public func checkAllMail() async {
+        let eligibleAccounts = accountManager.accounts.filter { $0.includeInManualCheck }
+        Self.logger.info("Triggering manual mail check for \(eligibleAccounts.count, privacy: .public) eligible account(s)")
+
+        await withTaskGroup(of: Void.self) { group in
+            for account in eligibleAccounts {
+                if let worker = self.workers[account.id] {
+                    group.addTask {
+                        await worker.checkNow()
+                    }
+                }
+            }
+        }
+    }
+
     // MARK: - Account Worker Synchronization
 
     private func syncWorkers(with accounts: [Account]) {

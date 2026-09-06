@@ -342,6 +342,128 @@ final class AccountSyncWorkerTests: XCTestCase {
 
         await connFailWorker.stop()
     }
+
+    func testCheckNowInterruptsPollModeAndFetchesNewMail() async throws {
+        let account = Account(email: "test-poll@example.com", provider: .fastmail, syncFrequency: .fifteenMinutes)
+        let fakeClient = FakeIMAPClient()
+        await fakeClient.setMailboxStatus(MailboxStatus(uidValidity: 1, uidNext: 100, messageCount: 10, recentCount: 0))
+
+        let receivedEvents = LockProtected<[NewMailEvent]>([])
+        let sleepCalled = LockProtected<Bool>(false)
+
+        let worker = AccountSyncWorker(
+            account: account,
+            imapClient: fakeClient,
+            syncStateStore: syncStore,
+            defaultSyncFrequency: .fifteenMinutes,
+            passwordProvider: { _ in "secret" },
+            sleepProvider: { _ in
+                sleepCalled.set(true)
+                // Simulate long 15-minute sleep
+                try await Task.sleep(nanoseconds: 60_000_000_000)
+            },
+            onNewMail: { event in
+                receivedEvents.withLock { $0.append(event) }
+            }
+        )
+
+        await worker.start()
+
+        // Wait until initial baseline sync pass finishes and worker enters sleep
+        for _ in 0..<50 {
+            if sleepCalled.get() { break }
+            try await Task.sleep(nanoseconds: 10_000_000)
+        }
+        XCTAssertTrue(sleepCalled.get())
+        XCTAssertTrue(receivedEvents.get().isEmpty)
+
+        // Configure fake client with new messages
+        let msg = MessageSummary(uid: 105, subject: "Manual Check Mail", from: "sender@example.com", dateReceived: Date())
+        await fakeClient.setCannedMessages([msg])
+
+        // Force checkNow() - should interrupt sleep, sync, and return when sync completes
+        await worker.checkNow()
+
+        // Verify that the new mail event was received
+        let events = receivedEvents.get()
+        XCTAssertEqual(events.count, 1)
+        XCTAssertEqual(events.first?.messages.count, 1)
+        XCTAssertEqual(events.first?.messages.first?.uid, 105)
+
+        // Verify sync state updated
+        let state = try syncStore.state(forAccountID: account.id)
+        XCTAssertEqual(state?.lastSeenUID, 105)
+
+        await worker.stop()
+    }
+
+    func testCheckNowInterruptsIdleModeAndResumesIdle() async throws {
+        let account = Account(email: "test-idle@example.com", provider: .fastmail, syncFrequency: .always)
+        let fakeClient = FakeIMAPClient()
+        await fakeClient.setSupportsIdle(true)
+        await fakeClient.setMailboxStatus(MailboxStatus(uidValidity: 1, uidNext: 200, messageCount: 20, recentCount: 0))
+
+        let receivedEvents = LockProtected<[NewMailEvent]>([])
+
+        let worker = AccountSyncWorker(
+            account: account,
+            imapClient: fakeClient,
+            syncStateStore: syncStore,
+            defaultSyncFrequency: .always,
+            passwordProvider: { _ in "secret" },
+            sleepProvider: { _ in
+                // 28-minute IDLE refresh sleep
+                try await Task.sleep(nanoseconds: 60_000_000_000)
+            },
+            onNewMail: { event in
+                receivedEvents.withLock { $0.append(event) }
+            }
+        )
+
+        await worker.start()
+
+        // Wait until IDLE mode is started
+        for _ in 0..<50 {
+            let startCount = await fakeClient.startIdleCallCount
+            if startCount >= 1 { break }
+            try await Task.sleep(nanoseconds: 10_000_000)
+        }
+
+        let initialStartIdleCount = await fakeClient.startIdleCallCount
+        XCTAssertGreaterThanOrEqual(initialStartIdleCount, 1)
+        let initialStopIdleCount = await fakeClient.stopIdleCallCount
+        XCTAssertEqual(initialStopIdleCount, 0)
+
+        // Set up new canned mail
+        let msg = MessageSummary(uid: 205, subject: "Idle Manual Check", from: "boss@example.com", dateReceived: Date())
+        await fakeClient.setCannedMessages([msg])
+
+        // Force checkNow() - should interrupt IDLE (stopIdle), fetch new mail, and resume IDLE (startIdle)
+        await worker.checkNow()
+
+        // Verify stopIdle was called
+        let afterStopIdleCount = await fakeClient.stopIdleCallCount
+        XCTAssertGreaterThanOrEqual(afterStopIdleCount, 1)
+
+        // Verify new mail event received
+        let events = receivedEvents.get()
+        XCTAssertEqual(events.count, 1)
+        XCTAssertEqual(events.first?.messages.first?.uid, 205)
+
+        // Verify IDLE was resumed (startIdle called again)
+        for _ in 0..<50 {
+            let currentStartCount = await fakeClient.startIdleCallCount
+            if currentStartCount > initialStartIdleCount { break }
+            try await Task.sleep(nanoseconds: 10_000_000)
+        }
+        let finalStartIdleCount = await fakeClient.startIdleCallCount
+        XCTAssertGreaterThan(finalStartIdleCount, initialStartIdleCount)
+
+        // Verify no duplicate events
+        XCTAssertEqual(receivedEvents.get().count, 1)
+
+        await worker.stop()
+    }
 }
 
 // MARK: - Thread-safe Test Box

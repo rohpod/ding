@@ -39,6 +39,11 @@ public struct Account: Identifiable, Codable, Equatable, Sendable {
     /// authentication failures (such as revoked app passwords or expired credentials) during sync.
     public var needsReauthentication: Bool
 
+    /// Flag indicating whether the account is included when performing a global manual "Check for Mail" operation.
+    ///
+    /// Defaults to `true`.
+    public var includeInManualCheck: Bool
+
     /// Timestamp when this account was added to ding.
     public let dateAdded: Date
 
@@ -50,6 +55,7 @@ public struct Account: Identifiable, Codable, Equatable, Sendable {
         case syncFrequency
         case notificationClickBehavior
         case needsReauthentication
+        case includeInManualCheck
         case dateAdded
     }
 
@@ -63,6 +69,7 @@ public struct Account: Identifiable, Codable, Equatable, Sendable {
     ///   - syncFrequency: The synchronization frequency. Defaults to `.useDefault`.
     ///   - notificationClickBehavior: The notification click behavior. Defaults to `.useDefault`.
     ///   - needsReauthentication: Flag indicating if the account requires re-authentication. Defaults to `false`.
+    ///   - includeInManualCheck: Flag indicating if the account is included in manual mail check. Defaults to `true`.
     ///   - dateAdded: The timestamp when the account was created. Defaults to the current date.
     public init(
         id: UUID = UUID(),
@@ -72,6 +79,7 @@ public struct Account: Identifiable, Codable, Equatable, Sendable {
         syncFrequency: SyncFrequency = .useDefault,
         notificationClickBehavior: NotificationClickBehavior = .useDefault,
         needsReauthentication: Bool = false,
+        includeInManualCheck: Bool = true,
         dateAdded: Date = Date()
     ) {
         self.id = id
@@ -81,6 +89,7 @@ public struct Account: Identifiable, Codable, Equatable, Sendable {
         self.syncFrequency = syncFrequency
         self.notificationClickBehavior = notificationClickBehavior
         self.needsReauthentication = needsReauthentication
+        self.includeInManualCheck = includeInManualCheck
         // Floor to whole seconds so date equality survives ISO-8601 serialization without fractional discrepancies
         // and never rounds into the future.
         self.dateAdded = Date(timeIntervalSince1970: floor(dateAdded.timeIntervalSince1970))
@@ -95,6 +104,7 @@ public struct Account: Identifiable, Codable, Equatable, Sendable {
         self.syncFrequency = try container.decodeIfPresent(SyncFrequency.self, forKey: .syncFrequency) ?? .useDefault
         self.notificationClickBehavior = try container.decodeIfPresent(NotificationClickBehavior.self, forKey: .notificationClickBehavior) ?? .useDefault
         self.needsReauthentication = try container.decodeIfPresent(Bool.self, forKey: .needsReauthentication) ?? false
+        self.includeInManualCheck = try container.decodeIfPresent(Bool.self, forKey: .includeInManualCheck) ?? true
         self.dateAdded = try container.decode(Date.self, forKey: .dateAdded)
     }
 
@@ -107,6 +117,7 @@ public struct Account: Identifiable, Codable, Equatable, Sendable {
         try container.encode(syncFrequency, forKey: .syncFrequency)
         try container.encode(notificationClickBehavior, forKey: .notificationClickBehavior)
         try container.encode(needsReauthentication, forKey: .needsReauthentication)
+        try container.encode(includeInManualCheck, forKey: .includeInManualCheck)
         try container.encode(dateAdded, forKey: .dateAdded)
     }
 
@@ -154,6 +165,7 @@ public struct Account: Identifiable, Codable, Equatable, Sendable {
         lhs.syncFrequency == rhs.syncFrequency &&
         lhs.notificationClickBehavior == rhs.notificationClickBehavior &&
         lhs.needsReauthentication == rhs.needsReauthentication &&
+        lhs.includeInManualCheck == rhs.includeInManualCheck &&
         abs(lhs.dateAdded.timeIntervalSince(rhs.dateAdded)) < 1.0
     }
 }
