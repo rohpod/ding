@@ -260,7 +260,6 @@ private struct AccountDetailView: View {
     @State private var newAppPassword: String = ""
     @State private var reauthErrorMessage: String?
     @State private var isUpdatingPassword: Bool = false
-    @State private var isCheckingNow: Bool = false
     @FocusState private var isAliasFocused: Bool
 
     var body: some View {
@@ -329,36 +328,12 @@ private struct AccountDetailView: View {
                     }
                 }
 
-                Toggle("Include in manual check", isOn: Binding(
+                Toggle("Show in menu bar check list", isOn: Binding(
                     get: { account.includeInManualCheck },
                     set: { newValue in
                         updateAccountIncludeInManualCheck(newValue)
                     }
                 ))
-
-                HStack {
-                    Button(action: {
-                        Task {
-                            isCheckingNow = true
-                            await SyncEngine.shared.checkMail(accountID: account.id)
-                            isCheckingNow = false
-                        }
-                    }) {
-                        Text("Check Now")
-                    }
-                    .disabled(isCheckingNow)
-
-                    if isCheckingNow {
-                        ProgressView()
-                            .controlSize(.small)
-                            .padding(.leading, 6)
-                        Text("Checking…")
-                            .font(.caption)
-                            .foregroundColor(.secondary)
-                    }
-
-                    Spacer()
-                }
             }
         }
         .formStyle(.grouped)

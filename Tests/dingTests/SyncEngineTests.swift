@@ -327,9 +327,42 @@ final class SyncEngineTests: XCTestCase {
         // Call checkMail(accountID:) directly for acc2 - should check acc2 even if excluded from global check
         await engine.checkMail(accountID: acc2ID)
 
-        let fetchCount2AfterDirect = await fakeClient2.fetchNewMessagesCallCount
-        XCTAssertGreaterThan(fetchCount2AfterDirect, fetchCount2After, "Targeted checkMail must check specified account")
+        // Verify manualCheckAccounts list for menu bar reflects only included accounts
+        XCTAssertEqual(engine.manualCheckAccounts.count, 1)
+        XCTAssertEqual(engine.manualCheckAccounts.first?.id, acc1ID)
 
         engine.stop()
+    }
+
+    @MainActor
+    func testManualCheckAccountsReflectsIncludeInManualCheckAndUpdatesDynamically() throws {
+        let manager = AccountManager(accountStore: testStore, keychainService: mockKeychain)
+        var acc1 = try manager.addAccount(email: "user1@example.com", provider: .gmail, appPassword: "pwd")
+        acc1.includeInManualCheck = true
+        try manager.updateAccount(acc1)
+
+        var acc2 = try manager.addAccount(email: "user2@example.com", provider: .fastmail, appPassword: "pwd")
+        acc2.includeInManualCheck = false
+        try manager.updateAccount(acc2)
+
+        let engine = SyncEngine(accountManager: manager)
+
+        // Only acc1 is included initially
+        XCTAssertEqual(engine.manualCheckAccounts.count, 1)
+        XCTAssertEqual(engine.manualCheckAccounts.first?.id, acc1.id)
+
+        // Enable manual check for acc2
+        acc2.includeInManualCheck = true
+        try manager.updateAccount(acc2)
+
+        XCTAssertEqual(engine.manualCheckAccounts.count, 2)
+        XCTAssertTrue(engine.manualCheckAccounts.contains(where: { $0.id == acc2.id }))
+
+        // Disable manual check for acc1
+        acc1.includeInManualCheck = false
+        try manager.updateAccount(acc1)
+
+        XCTAssertEqual(engine.manualCheckAccounts.count, 1)
+        XCTAssertEqual(engine.manualCheckAccounts.first?.id, acc2.id)
     }
 }

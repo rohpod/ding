@@ -37,10 +37,16 @@ public final class SyncEngine: ObservableObject {
     /// Indicates whether the sync engine is active.
     @Published public private(set) var isRunning: Bool = false
 
+    /// The list of configured accounts that have manual checking enabled.
+    public var manualCheckAccounts: [Account] {
+        accountManager.accounts.filter { $0.includeInManualCheck }
+    }
+
     private let accountManager: AccountManager
     private let appPreferences: AppPreferences
     private let workerFactory: WorkerFactory
     private var cancellables = Set<AnyCancellable>()
+    private var accountObservation: AnyCancellable?
     private var eventContinuations: [UUID: AsyncStream<NewMailEvent>.Continuation] = [:]
 
     /// Initializes a new sync engine coordinator.
@@ -64,6 +70,10 @@ public final class SyncEngine: ObservableObject {
                 defaultSyncFrequency: defaultFrequency,
                 onNewMail: onNewMail
             )
+        }
+
+        self.accountObservation = accountManager.objectWillChange.sink { [weak self] _ in
+            self?.objectWillChange.send()
         }
     }
 

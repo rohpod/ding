@@ -2,10 +2,21 @@ import SwiftUI
 
 /// SwiftUI view providing the drop-down menu items for ding's menu bar status item.
 struct MenuBarContentView: View {
+    @ObservedObject private var syncEngine = SyncEngine.shared
+    @ObservedObject private var accountManager = AccountManager.shared
+
     var body: some View {
         Button("Check for Mail") {
             Task {
-                await SyncEngine.shared.checkAllMail()
+                await syncEngine.checkAllMail()
+            }
+        }
+
+        ForEach(syncEngine.manualCheckAccounts) { account in
+            Button(account.displayName) {
+                Task {
+                    await syncEngine.checkMail(accountID: account.id)
+                }
             }
         }
 
