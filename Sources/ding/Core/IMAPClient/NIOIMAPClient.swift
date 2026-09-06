@@ -36,7 +36,7 @@ import NIOIMAPCore
 /// from all logging statements, even at `.debug` level. Diagnostics log only operation types, server endpoints,
 /// and error classifications to ensure zero sensitive user data is exposed in macOS system logs (`log stream`).
 public actor NIOIMAPClient: IMAPConnecting {
-    private static let logger = Logger(subsystem: "com.ding.mac.v2", category: "IMAPClient")
+    private static let logger = Logger(subsystem: DingLog.subsystem, category: "IMAPClient")
 
     /// Shared single-threaded `EventLoopGroup` used across all client instances to minimize RAM and OS threads.
     public static let sharedEventLoopGroup: any EventLoopGroup = MultiThreadedEventLoopGroup(numberOfThreads: 1)
@@ -92,17 +92,8 @@ public actor NIOIMAPClient: IMAPConnecting {
         Self.logger.info("Attempting IMAP connection to \(host, privacy: .public):\(port, privacy: .public)")
 
         do {
-            try await withThrowingTaskGroup(of: Void.self) { group in
-                group.addTask {
-                    try await self.performConnect(host: host, port: port)
-                }
-                group.addTask {
-                    // 15-second connection timeout
-                    try await Task.sleep(nanoseconds: 15_000_000_000)
-                    throw IMAPClientError.timeout
-                }
-                try await group.next()
-                group.cancelAll()
+            try await withTimeout(seconds: 15) {
+                try await self.performConnect(host: host, port: port)
             }
         } catch {
             await self.disconnect()
@@ -135,19 +126,9 @@ public actor NIOIMAPClient: IMAPConnecting {
         handler.beginCommand(tag: tag)
 
         do {
-            let response = try await withThrowingTaskGroup(of: ParsedCommandResponse.self) { group in
-                group.addTask {
-                    try await channel.writeAndFlush(message)
-                    return try await handler.waitForCommand(tag: tag)
-                }
-                group.addTask {
-                    // 15-second command timeout
-                    try await Task.sleep(nanoseconds: 15_000_000_000)
-                    throw IMAPClientError.timeout
-                }
-                let result = try await group.next()!
-                group.cancelAll()
-                return result
+            let response = try await withTimeout(seconds: 15) {
+                try await channel.writeAndFlush(message)
+                return try await handler.waitForCommand(tag: tag)
             }
 
             switch response.tagged.state {
@@ -180,10 +161,7 @@ public actor NIOIMAPClient: IMAPConnecting {
 
         // Stop active IDLE if in progress
         if self.activeIdleTag != nil {
-            self.activeIdleTag = nil
-            self.responseHandler?.setIdleContinuation(nil)
-            let doneMessage = IMAPClientHandler.Message.part(.idleDone)
-            try? await channel.writeAndFlush(doneMessage)
+            try? await self.stopIdle()
         }
 
         // Best-effort graceful IMAP LOGOUT if channel is still active
@@ -194,18 +172,9 @@ public actor NIOIMAPClient: IMAPConnecting {
 
             handler.beginCommand(tag: tag)
             do {
-                try await withThrowingTaskGroup(of: Void.self) { group in
-                    group.addTask {
-                        try await channel.writeAndFlush(message)
-                        _ = try await handler.waitForCommand(tag: tag)
-                    }
-                    group.addTask {
-                        // 3-second grace window for LOGOUT response
-                        try await Task.sleep(nanoseconds: 3_000_000_000)
-                        throw IMAPClientError.timeout
-                    }
-                    _ = try await group.next()
-                    group.cancelAll()
+                try await withTimeout(seconds: 3) {
+                    try await channel.writeAndFlush(message)
+                    _ = try await handler.waitForCommand(tag: tag)
                 }
             } catch {
                 Self.logger.debug("IMAP LOGOUT completed or timed out during disconnect")
@@ -243,19 +212,9 @@ public actor NIOIMAPClient: IMAPConnecting {
         handler.beginCommand(tag: tag)
 
         do {
-            let response = try await withThrowingTaskGroup(of: ParsedCommandResponse.self) { group in
-                group.addTask {
-                    try await channel.writeAndFlush(message)
-                    return try await handler.waitForCommand(tag: tag)
-                }
-                group.addTask {
-                    // 15-second timeout for SELECT
-                    try await Task.sleep(nanoseconds: 15_000_000_000)
-                    throw IMAPClientError.timeout
-                }
-                let result = try await group.next()!
-                group.cancelAll()
-                return result
+            let response = try await withTimeout(seconds: 15) {
+                try await channel.writeAndFlush(message)
+                return try await handler.waitForCommand(tag: tag)
             }
 
             switch response.tagged.state {
@@ -361,19 +320,9 @@ public actor NIOIMAPClient: IMAPConnecting {
         handler.beginCommand(tag: tag)
 
         do {
-            let response = try await withThrowingTaskGroup(of: ParsedCommandResponse.self) { group in
-                group.addTask {
-                    try await channel.writeAndFlush(message)
-                    return try await handler.waitForCommand(tag: tag)
-                }
-                group.addTask {
-                    // 20-second timeout for UID FETCH
-                    try await Task.sleep(nanoseconds: 20_000_000_000)
-                    throw IMAPClientError.timeout
-                }
-                let result = try await group.next()!
-                group.cancelAll()
-                return result
+            let response = try await withTimeout(seconds: 20) {
+                try await channel.writeAndFlush(message)
+                return try await handler.waitForCommand(tag: tag)
             }
 
             switch response.tagged.state {
@@ -466,18 +415,9 @@ public actor NIOIMAPClient: IMAPConnecting {
         handler.beginCommand(tag: tag)
 
         do {
-            let response = try await withThrowingTaskGroup(of: ParsedCommandResponse.self) { group in
-                group.addTask {
-                    try await channel.writeAndFlush(message)
-                    return try await handler.waitForCommand(tag: tag)
-                }
-                group.addTask {
-                    try await Task.sleep(nanoseconds: 10_000_000_000)
-                    throw IMAPClientError.timeout
-                }
-                let result = try await group.next()!
-                group.cancelAll()
-                return result
+            let response = try await withTimeout(seconds: 10) {
+                try await channel.writeAndFlush(message)
+                return try await handler.waitForCommand(tag: tag)
             }
 
             for untagged in response.untagged {
@@ -527,16 +467,8 @@ public actor NIOIMAPClient: IMAPConnecting {
         do {
             try await channel.writeAndFlush(message)
             // 15-second timeout for server to acknowledge IDLE start (+ idling)
-            try await withThrowingTaskGroup(of: Void.self) { group in
-                group.addTask {
-                    try await handler.waitForIdleStart()
-                }
-                group.addTask {
-                    try await Task.sleep(nanoseconds: 15_000_000_000)
-                    throw IMAPClientError.timeout
-                }
-                try await group.next()
-                group.cancelAll()
+            try await withTimeout(seconds: 15) {
+                try await handler.waitForIdleStart()
             }
             Self.logger.info("IMAP IDLE stream established for tag \(tag, privacy: .public)")
             return stream
@@ -564,18 +496,9 @@ public actor NIOIMAPClient: IMAPConnecting {
         let message = IMAPClientHandler.Message.part(.idleDone)
 
         do {
-            try await withThrowingTaskGroup(of: Void.self) { group in
-                group.addTask {
-                    try await channel.writeAndFlush(message)
-                    _ = try await handler.waitForCommand(tag: tag)
-                }
-                group.addTask {
-                    // 10-second timeout for IDLE DONE tagged response
-                    try await Task.sleep(nanoseconds: 10_000_000_000)
-                    throw IMAPClientError.timeout
-                }
-                try await group.next()
-                group.cancelAll()
+            try await withTimeout(seconds: 10) {
+                try await channel.writeAndFlush(message)
+                _ = try await handler.waitForCommand(tag: tag)
             }
         } catch {
             Self.logger.warning("Error stopping IDLE: \(error.localizedDescription, privacy: .public)")
@@ -706,6 +629,24 @@ public actor NIOIMAPClient: IMAPConnecting {
             return .tlsHandshakeFailed(underlying: error)
         }
         return .connectionFailed(underlying: error)
+    }
+
+    private func withTimeout<T: Sendable>(
+        seconds: TimeInterval,
+        operation: @Sendable @escaping () async throws -> T
+    ) async throws -> T {
+        try await withThrowingTaskGroup(of: T.self) { group in
+            group.addTask {
+                try await operation()
+            }
+            group.addTask {
+                try await Task.sleep(nanoseconds: UInt64(seconds * 1_000_000_000))
+                throw IMAPClientError.timeout
+            }
+            let result = try await group.next()!
+            group.cancelAll()
+            return result
+        }
     }
 }
 

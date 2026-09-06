@@ -18,20 +18,4 @@ public enum UpdateCheckResult: Equatable, Sendable {
         }
         return false
     }
-
-    /// The latest release version tag if available.
-    public var latestVersion: String? {
-        if case let .updateAvailable(_, latest, _) = self {
-            return latest
-        }
-        return nil
-    }
-
-    /// The URL to the release page on GitHub if an update is available.
-    public var releaseURL: URL? {
-        if case let .updateAvailable(_, _, url) = self {
-            return url
-        }
-        return nil
-    }
 }

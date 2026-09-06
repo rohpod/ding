@@ -61,7 +61,7 @@ public struct NotificationActionRouter {
 
         case .openInBrowser:
             // Open provider's inbox in the default web browser.
-            // Deep-linking to individual messages varies by provider and is scoped out of v1.
+            // Deep-linking to individual messages varies by provider.
             let webmailURL = provider.webmailURL
             return urlOpener(webmailURL)
         }
@@ -70,7 +70,7 @@ public struct NotificationActionRouter {
 
 /// Delegate for `UNUserNotificationCenter` handling foreground presentation and click routing.
 public final class NotificationClickHandler: NSObject, UNUserNotificationCenterDelegate, Sendable {
-    private static let logger = Logger(subsystem: "com.ding.mac.v2", category: "NotificationClickHandler")
+    private static let logger = Logger(subsystem: DingLog.subsystem, category: "NotificationClickHandler")
 
     /// Shared singleton instance of `NotificationClickHandler`.
     public static let shared = NotificationClickHandler()

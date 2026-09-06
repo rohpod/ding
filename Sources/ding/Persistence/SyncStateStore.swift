@@ -63,7 +63,7 @@ public protocol SyncStateStoreProtocol: Sendable {
 /// Manages serialization and deserialization of account sync states to `sync_state.json`
 /// in the user's Application Support directory.
 public final class SyncStateStore: SyncStateStoreProtocol, Sendable {
-    private static let logger = Logger(subsystem: "com.ding.mac.v2", category: "SyncStateStore")
+    private static let logger = Logger(subsystem: DingLog.subsystem, category: "SyncStateStore")
 
     /// The resolved URL of the sync state JSON file.
     public let fileURL: URL

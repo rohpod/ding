@@ -10,7 +10,7 @@ import SwiftUI
 ///   including re-authentication recovery, alias, sync frequency, and notification behavior.
 @MainActor
 struct AccountsSettingsView: View {
-    private static let logger = Logger(subsystem: "com.ding.mac.v2", category: "AccountsUI")
+    private static let logger = Logger(subsystem: DingLog.subsystem, category: "AccountsUI")
 
     @ObservedObject private var accountManager: AccountManager
     private let imapClientFactory: @Sendable (MailProvider) -> any IMAPConnecting
@@ -224,7 +224,7 @@ private struct AccountListRow: View {
 
     var body: some View {
         HStack(spacing: 8) {
-            // Note: Provider-specific icons (e.g. Gmail, Outlook) can be added as image assets in a future release.
+            // Note: Provider-specific icons (e.g. Gmail, Outlook) can be added as image assets.
             Image(systemName: "envelope.circle")
                 .font(.system(size: 16))
                 .foregroundColor(.accentColor)
@@ -251,7 +251,7 @@ private struct AccountListRow: View {
 
 /// Right panel view displaying configuration fields for the selected account.
 private struct AccountDetailView: View {
-    private static let logger = Logger(subsystem: "com.ding.mac.v2", category: "AccountsUI")
+    private static let logger = Logger(subsystem: DingLog.subsystem, category: "AccountsUI")
 
     let account: Account
     @ObservedObject var accountManager: AccountManager
@@ -419,8 +419,7 @@ private struct AccountDetailView: View {
     // MARK: - Actions
 
     private func saveAlias() {
-        let trimmed = aliasText.trimmingCharacters(in: .whitespacesAndNewlines)
-        let finalAlias = trimmed.isEmpty ? nil : trimmed
+        let finalAlias = Account.normalizeAlias(aliasText)
         if account.alias != finalAlias {
             var updated = account
             updated.alias = finalAlias

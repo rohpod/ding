@@ -9,7 +9,7 @@ import SwiftUI
 /// hides it without quitting the application or releasing the window object.
 @MainActor
 final class SettingsWindowController: NSWindowController, NSWindowDelegate {
-    private static let logger = Logger(subsystem: "com.ding.mac.v2", category: "SettingsWindow")
+    nonisolated private static let logger = Logger(subsystem: DingLog.subsystem, category: "SettingsWindow")
 
     /// Initializes a new settings window controller hosting the SwiftUI `SettingsView`.
     init() {
@@ -58,8 +58,6 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
     // MARK: - NSWindowDelegate
 
     nonisolated func windowWillClose(_ notification: Notification) {
-        Task { @MainActor in
-            Self.logger.info("Settings window closed by user.")
-        }
+        Self.logger.info("Settings window closed by user.")
     }
 }

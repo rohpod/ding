@@ -35,7 +35,7 @@ public struct Account: Identifiable, Codable, Equatable, Sendable {
     /// Flag indicating whether the account's credentials have been rejected by the mail server
     /// and require user re-authentication.
     ///
-    /// Defaults to `false`. The future `SyncEngine` will set this flag to `true` when it detects
+    /// Defaults to `false`. The `SyncEngine` sets this flag to `true` when it detects
     /// authentication failures (such as revoked app passwords or expired credentials) during sync.
     public var needsReauthentication: Bool
 
@@ -121,40 +121,22 @@ public struct Account: Identifiable, Codable, Equatable, Sendable {
         try container.encode(dateAdded, forKey: .dateAdded)
     }
 
+    /// Normalizes an optional account alias by trimming whitespace and newlines, returning `nil` if empty.
+    public static func normalizeAlias(_ alias: String?) -> String? {
+        guard let trimmed = alias?.trimmingCharacters(in: .whitespacesAndNewlines), !trimmed.isEmpty else {
+            return nil
+        }
+        return trimmed
+    }
+
     /// User-facing display name for UI presentation.
     ///
-    /// Returns the trimmed `alias` if non-empty, otherwise falls back to `email`.
+    /// Returns the normalized `alias` if present, otherwise falls back to `email`.
     public var displayName: String {
-        if let alias = alias?.trimmingCharacters(in: .whitespacesAndNewlines), !alias.isEmpty {
+        if let alias = Self.normalizeAlias(alias) {
             return alias
         }
         return email
-    }
-
-    /// The effective sync frequency for this account.
-    ///
-    /// If `syncFrequency` is set to `.useDefault`, this returns the global default from
-    /// `AppPreferences.shared.defaultSyncFrequency`. When an account has a specific frequency configured,
-    /// that frequency explicitly overrides the general default.
-    @MainActor
-    public var effectiveSyncFrequency: SyncFrequency {
-        if syncFrequency == .useDefault {
-            return AppPreferences.shared.defaultSyncFrequency
-        }
-        return syncFrequency
-    }
-
-    /// The effective notification click behavior for this account.
-    ///
-    /// If `notificationClickBehavior` is set to `.useDefault`, this returns the global default from
-    /// `AppPreferences.shared.defaultNotificationClickBehavior`. When an account has a specific behavior configured,
-    /// that behavior explicitly overrides the general default.
-    @MainActor
-    public var effectiveNotificationClickBehavior: NotificationClickBehavior {
-        if notificationClickBehavior == .useDefault {
-            return AppPreferences.shared.defaultNotificationClickBehavior
-        }
-        return notificationClickBehavior
     }
 
     public static func == (lhs: Account, rhs: Account) -> Bool {

@@ -8,7 +8,7 @@ import SwiftUI
 /// setup failed to display an icon when launched from a signed `.build/ding.app` bundle,
 /// and `MenuBarExtra` eliminates custom status item lifecycle management code.
 @main
-struct dingApp: App {
+struct DingApp: App {
     @NSApplicationDelegateAdaptor(AppDelegate.self) private var appDelegate
     @ObservedObject private var preferences = AppPreferences.shared
     @State private var isMenuBarIconVisible: Bool = AppPreferences.shared.isMenuBarIconVisible

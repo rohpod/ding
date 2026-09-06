@@ -43,7 +43,7 @@ public enum AccountManagerError: LocalizedError, Sendable, Equatable {
 /// concurrency, this guarantees thread safety across SwiftUI views and background services without data races.
 @MainActor
 public final class AccountManager: ObservableObject {
-    private static let logger = Logger(subsystem: "com.ding.mac.v2", category: "AccountManager")
+    private static let logger = Logger(subsystem: DingLog.subsystem, category: "AccountManager")
 
     /// The shared singleton instance of `AccountManager`.
     public static let shared = AccountManager()
@@ -132,8 +132,7 @@ public final class AccountManager: ObservableObject {
             throw AccountManagerError.duplicateAccount(email: cleanedEmail)
         }
 
-        let trimmedAlias = alias?.trimmingCharacters(in: .whitespacesAndNewlines)
-        let finalAlias = (trimmedAlias?.isEmpty == false) ? trimmedAlias : nil
+        let finalAlias = Account.normalizeAlias(alias)
 
         let account = Account(
             email: cleanedEmail,

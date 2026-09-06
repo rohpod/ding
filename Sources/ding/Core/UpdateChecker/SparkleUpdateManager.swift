@@ -8,7 +8,7 @@ import Sparkle
 /// to guarantee thread safety across SwiftUI and AppKit components.
 @MainActor
 public final class SparkleUpdateManager {
-    private static let logger = Logger(subsystem: "com.ding.mac.v2", category: "SparkleUpdateManager")
+    private static let logger = Logger(subsystem: DingLog.subsystem, category: "SparkleUpdateManager")
 
     /// The shared singleton instance of `SparkleUpdateManager`.
     public static let shared = SparkleUpdateManager()

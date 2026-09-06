@@ -4,7 +4,7 @@ import Foundation
 ///
 /// ## Architecture & Testability Seam
 /// `IMAPConnecting` serves as the primary abstraction boundary between higher-level application components
-/// (such as `AccountManager`, the "Add Account" verification flow, and the future `SyncEngine`) and the
+/// (such as `AccountManager`, the "Add Account" verification flow, and `SyncEngine`) and the
 /// underlying networking engine.
 ///
 /// By depending on `IMAPConnecting` rather than concrete SwiftNIO networking types:

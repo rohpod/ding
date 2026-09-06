@@ -56,7 +56,7 @@ public protocol AccountStoreProtocol: Sendable {
 /// Per Ding's security model, this store writes metadata only. Passwords are never
 /// serialized to this file and reside exclusively in the system Keychain.
 public final class AccountStore: AccountStoreProtocol, Sendable {
-    private static let logger = Logger(subsystem: "com.ding.mac.v2", category: "AccountStore")
+    private static let logger = Logger(subsystem: DingLog.subsystem, category: "AccountStore")
 
     /// The resolved URL of the accounts JSON file.
     public let fileURL: URL

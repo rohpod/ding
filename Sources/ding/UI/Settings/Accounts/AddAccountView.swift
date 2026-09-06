@@ -10,7 +10,7 @@ import SwiftUI
 /// `@MainActor`, safely awaiting asynchronous network calls on actor-isolated IMAP clients.
 @MainActor
 struct AddAccountView: View {
-    private static let logger = Logger(subsystem: "com.ding.mac.v2", category: "AccountsUI")
+    private static let logger = Logger(subsystem: DingLog.subsystem, category: "AccountsUI")
 
     @Environment(\.dismiss) private var dismiss
     @ObservedObject private var accountManager: AccountManager
@@ -202,8 +202,7 @@ struct AddAccountView: View {
 
         let cleanedEmail = email.trimmingCharacters(in: .whitespacesAndNewlines)
         let cleanedPassword = appPassword.trimmingCharacters(in: .whitespacesAndNewlines)
-        let trimmedAlias = alias.trimmingCharacters(in: .whitespacesAndNewlines)
-        let finalAlias = trimmedAlias.isEmpty ? nil : trimmedAlias
+        let finalAlias = Account.normalizeAlias(alias)
 
         isVerifying = true
         errorMessage = nil
@@ -230,7 +229,7 @@ struct AddAccountView: View {
             await client.disconnect()
             isVerifying = false
             Self.logger.error("IMAP client verification failed: \(error.localizedDescription, privacy: .public)")
-            errorMessage = message(for: error, provider: provider)
+            errorMessage = error.localizedDescription
         } catch let error as AccountManagerError {
             await client.disconnect()
             isVerifying = false
@@ -241,27 +240,6 @@ struct AddAccountView: View {
             isVerifying = false
             Self.logger.error("Unexpected error during account addition: \(error.localizedDescription, privacy: .public)")
             errorMessage = error.localizedDescription
-        }
-    }
-
-    private func message(for error: IMAPClientError, provider: MailProvider) -> String {
-        switch error {
-        case .authenticationFailed:
-            return "Incorrect app password — check you copied it correctly, or generate a new one."
-        case .connectionFailed:
-            return "Couldn't connect to \(provider.imapHost) — check your internet connection and try again."
-        case .timeout:
-            return "The connection timed out while contacting \(provider.displayName). Please try again."
-        case .tlsHandshakeFailed:
-            return "Secure connection failed — unable to establish TLS with \(provider.imapHost)."
-        case .unexpectedResponse(let details):
-            return "Unexpected response from \(provider.displayName): \(details)"
-        case .notConnected:
-            return "Not connected to the mail server."
-        case .idleNotSupported:
-            return "\(provider.displayName) does not support IDLE push notifications."
-        case .selectFailed(let details):
-            return "Failed to access mailbox: \(details)"
         }
     }
 }

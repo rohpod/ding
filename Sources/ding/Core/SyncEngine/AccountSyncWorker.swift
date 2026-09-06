@@ -34,7 +34,7 @@ import os
 /// Critical credential rejection (`.authenticationFailed`) halts the sync loop immediately to prevent account lockout,
 /// sets `needsReauthentication = true` on `AccountManager`, and logs a high-priority diagnostic.
 public actor AccountSyncWorker {
-    private static let logger = Logger(subsystem: "com.ding.mac.v2", category: "AccountSyncWorker")
+    private static let logger = Logger(subsystem: DingLog.subsystem, category: "AccountSyncWorker")
 
     /// The account managed by this worker.
     public let account: Account
@@ -236,7 +236,6 @@ public actor AccountSyncWorker {
     private func runIdleMode() async throws {
         while isRunning && !Task.isCancelled {
             let stream = try await imapClient.startIdle()
-            let completionCoordinator = self.completionCoordinator
 
             // Run IDLE stream with a refresh timer and wake signal
             try await withThrowingTaskGroup(of: Void.self) { group in
@@ -249,7 +248,7 @@ public actor AccountSyncWorker {
                             // RFC 2177: stop IDLE before issuing UID FETCH
                             try await self.imapClient.stopIdle()
                             try await self.fetchAndEmitNewMail()
-                            completionCoordinator.notifyComplete()
+                            self.notifySyncCycleComplete()
                             return // Exit task to restart IDLE loop with fresh state
                         case .idleTimedOut:
                             try await self.imapClient.stopIdle()
@@ -272,7 +271,7 @@ public actor AccountSyncWorker {
                     Self.logger.info("Manual check triggered in IDLE mode for account \(self.account.id.uuidString, privacy: .public)")
                     try await self.imapClient.stopIdle()
                     try await self.fetchAndEmitNewMail()
-                    completionCoordinator.notifyComplete()
+                    self.notifySyncCycleComplete()
                 }
 
                 // Wait for either new mail, refresh timeout, or manual wake signal
