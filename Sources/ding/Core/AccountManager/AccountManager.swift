@@ -54,6 +54,29 @@ public final class AccountManager: ObservableObject {
     private let accountStore: AccountStoreProtocol
     private let keychainService: KeychainServiceProtocol
 
+    /// In-memory password cache keyed by account identifier.
+    ///
+    /// ## Rationale & Lifetime (Issue #16)
+    /// Ding is a background menu bar utility that repeatedly polls IMAP or maintains an IDLE loop.
+    /// In macOS, retrieving passwords from the legacy Keychain without "Always Allow" (or when an
+    /// ad-hoc signature's Designated Requirement changes across builds) prompts the user for authorization
+    /// on every `SecItemCopyMatching` call.
+    ///
+    /// To avoid prompting the user on every sync cycle / reconnect:
+    /// - Passwords are cached in memory upon first successful retrieval in the current app session.
+    /// - The cache is strictly process-lifetime: it is never written to disk, `UserDefaults`, or any
+    ///   persistent store. On app termination, memory is cleared.
+    /// - Entries are invalidated when an account is removed or when credentials are updated.
+    /// - Failed Keychain lookups (e.g. auth denial or error) are never cached, ensuring future
+    ///   attempts retry Keychain rather than persisting a broken/nil state.
+    ///
+    /// ## Concurrency & Thread Safety
+    /// Because `AccountManager` is `@MainActor`-isolated, access to this dictionary is serialized on
+    /// `@MainActor`. Background workers (such as `AccountSyncWorker`) access credentials via
+    /// `AccountManager.password(forAccountID:)` using `MainActor.run`, eliminating data races under
+    /// Swift 6 strict concurrency.
+    private var passwordCache: [UUID: String] = [:]
+
     /// Initializes a new account manager.
     ///
     /// - Parameters:
@@ -169,6 +192,9 @@ public final class AccountManager: ObservableObject {
             throw error
         }
 
+        passwordCache.removeValue(forKey: id)
+        Self.logger.debug("Invalidated password cache for removed account \(id.uuidString, privacy: .public)")
+
         Self.logger.info("Successfully removed account \(id.uuidString, privacy: .public)")
     }
 
@@ -196,7 +222,7 @@ public final class AccountManager: ObservableObject {
         Self.logger.info("Successfully updated account metadata for \(account.id.uuidString, privacy: .public)")
     }
 
-    /// Updates the stored app password in the Keychain for an existing account.
+    /// Updates the stored app password in the Keychain for an existing account and invalidates the session cache.
     ///
     /// - Parameters:
     ///   - id: The unique account identifier.
@@ -213,6 +239,8 @@ public final class AccountManager: ObservableObject {
         }
 
         try keychainService.updatePassword(cleanedPassword, forAccountID: id)
+        passwordCache.removeValue(forKey: id)
+        Self.logger.debug("Invalidated password cache for updated credentials on account \(id.uuidString, privacy: .public)")
         Self.logger.info("Successfully updated Keychain password for account \(id.uuidString, privacy: .public)")
     }
 
@@ -232,7 +260,10 @@ public final class AccountManager: ObservableObject {
         try updateAccount(account)
     }
 
-    /// Retrieves the stored app password for an account.
+    /// Retrieves the stored app password for an account, utilizing the in-memory session cache.
+    ///
+    /// If the password has already been retrieved during this process run, the cached value is returned
+    /// immediately to avoid repeated Keychain reads and authorization prompts (Issue #16).
     ///
     /// - Parameter id: The unique account identifier.
     /// - Returns: The decrypted app password string.
@@ -242,6 +273,20 @@ public final class AccountManager: ObservableObject {
             throw AccountManagerError.accountNotFound(id)
         }
 
-        return try keychainService.retrievePassword(forAccountID: id)
+        if let cachedPassword = passwordCache[id] {
+            Self.logger.debug("Password cache hit for account \(id.uuidString, privacy: .public)")
+            return cachedPassword
+        }
+
+        Self.logger.debug("Password cache miss for account \(id.uuidString, privacy: .public)")
+        do {
+            let retrievedPassword = try keychainService.retrievePassword(forAccountID: id)
+            passwordCache[id] = retrievedPassword
+            return retrievedPassword
+        } catch {
+            // Do not cache failures; next call should retry Keychain
+            passwordCache.removeValue(forKey: id)
+            throw error
+        }
     }
 }

@@ -43,6 +43,8 @@ public protocol KeychainServiceProtocol: Sendable {
 
     /// Retrieves the app password for the given account identifier.
     ///
+    /// - Note: In application code, prefer calling `AccountManager.password(forAccountID:)`
+    ///   which manages in-memory session caching (Issue #16) to avoid repetitive Keychain authorization prompts.
     /// - Parameter id: The unique account identifier.
     /// - Returns: The stored app password string.
     /// - Throws: `KeychainError.itemNotFound` if absent, or other `KeychainError`s on failure.
@@ -123,7 +125,12 @@ public final class KeychainService: KeychainServiceProtocol, Sendable {
         Self.logger.info("Successfully stored password for account \(id.uuidString, privacy: .public)")
     }
 
-    /// Retrieves an app password from the Keychain.
+    /// Retrieves an app password directly from the macOS system Keychain.
+    ///
+    /// - Important: Callers within application code should query credentials via
+    ///   `AccountManager.password(forAccountID:)` rather than calling this method directly.
+    ///   `AccountManager` maintains an in-memory session cache (Issue #16) that prevents
+    ///   repetitive system Keychain prompts across repeated IMAP polling cycles.
     public func retrievePassword(forAccountID id: UUID) throws -> String {
         Self.logger.debug("Retrieving password from Keychain for account: \(id.uuidString, privacy: .public)")
 
