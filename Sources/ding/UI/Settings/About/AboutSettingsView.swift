@@ -12,7 +12,7 @@ struct AboutSettingsView: View {
     private static let licenseURL = URL(string: "https://github.com/rohpod/ding/blob/main/LICENSE")!
 
     private var appVersion: String {
-        Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "0.2.0"
+        Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "0.3.0"
     }
 
     var body: some View {
