@@ -6,7 +6,7 @@ import UserNotifications
 /// The application delegate responsible for managing app lifecycle, background tasks, and notifications.
 @MainActor
 final class AppDelegate: NSObject, NSApplicationDelegate {
-    private static let logger = Logger(subsystem: "com.ding.mac.v2", category: "AppLifecycle")
+    private static let logger = Logger(subsystem: DingLog.subsystem, category: "AppLifecycle")
 
     /// Shared singleton instance accessible by views and controllers.
     public static private(set) var shared: AppDelegate?
@@ -121,7 +121,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     @objc func openSettings() {
         Self.logger.info("Action triggered: openSettings")
         if settingsWindowController == nil {
-            settingsWindowController = SettingsWindowController()
+            let controller = SettingsWindowController { [weak self] in
+                Self.logger.info("Releasing SettingsWindowController reference following window close.")
+                self?.settingsWindowController = nil
+            }
+            settingsWindowController = controller
         }
 
         guard let controller = settingsWindowController else {

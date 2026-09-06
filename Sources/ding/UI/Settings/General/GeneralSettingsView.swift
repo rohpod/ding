@@ -103,10 +103,6 @@ struct GeneralSettingsView: View {
 
     // MARK: - Private Helpers
 
-    private var isNotificationAllowed: Bool {
-        notificationStatus == .authorized || notificationStatus == .provisional
-    }
-
     @ViewBuilder
     private var deniedPermissionCallout: some View {
         VStack(alignment: .leading, spacing: 10) {

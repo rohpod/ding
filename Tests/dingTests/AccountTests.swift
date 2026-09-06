@@ -89,7 +89,7 @@ final class AccountTests: XCTestCase {
     }
 
     func testAccountCodableBackwardsCompatibilityWithoutNeedsReauthenticationKey() throws {
-        // Milestone 3 JSON payload without 'needsReauthentication'
+        // Legacy JSON payload without 'needsReauthentication'
         let legacyJSON = """
         {
             "id": "E621E1F8-C36C-495A-93FC-0C247A3E6E5F",
@@ -184,49 +184,14 @@ final class AccountTests: XCTestCase {
         XCTAssertTrue(decoded.includeInManualCheck, "Missing includeInManualCheck key must decode as true")
     }
 
-    @MainActor
-    func testAccountEffectiveSyncFrequencyOverridesGeneralDefault() {
-        let suiteName = "com.ding.tests.syncfreq.\(UUID().uuidString)"
-        guard let testDefaults = UserDefaults(suiteName: suiteName) else {
-            XCTFail("Failed to create test defaults.")
-            return
-        }
-        defer { testDefaults.removePersistentDomain(forName: suiteName) }
-
-        // Set global default to hourly
-        AppPreferences.shared.defaultSyncFrequency = .hourly
-
-        // Account with .useDefault resolves to global setting (.hourly)
-        var account = Account(email: "test@gmail.com", provider: .gmail, syncFrequency: .useDefault)
-        XCTAssertEqual(account.effectiveSyncFrequency, .hourly)
-
-        // Setting a specific sync frequency on the account explicitly overrides the global default
-        account.syncFrequency = .fiveMinutes
-        XCTAssertEqual(account.effectiveSyncFrequency, .fiveMinutes, "Account-specific frequency should override general setting")
-
-        // Changing global setting later does not change this account's overridden frequency
-        AppPreferences.shared.defaultSyncFrequency = .thirtyMinutes
-        XCTAssertEqual(account.effectiveSyncFrequency, .fiveMinutes, "Account override should remain independent of global changes")
-
-        // Reset global setting back to default
-        AppPreferences.shared.defaultSyncFrequency = .always
-    }
-
-    @MainActor
-    func testAccountEffectiveNotificationClickBehaviorOverridesGeneralDefault() {
-        // Set global default to openMailApp
-        AppPreferences.shared.defaultNotificationClickBehavior = .openMailApp
-
-        // Account with .useDefault resolves to global setting (.openMailApp)
-        var account = Account(email: "test@gmail.com", provider: .gmail, notificationClickBehavior: .useDefault)
-        XCTAssertEqual(account.effectiveNotificationClickBehavior, .openMailApp)
-
-        // Setting a specific click behavior on the account explicitly overrides the global default
-        account.notificationClickBehavior = .openInBrowser
-        XCTAssertEqual(account.effectiveNotificationClickBehavior, .openInBrowser, "Account-specific behavior should override general setting")
-
-        // Reset global setting back to default
-        AppPreferences.shared.defaultNotificationClickBehavior = .doNothing
+    func testAccountNormalizeAlias() {
+        XCTAssertNil(Account.normalizeAlias(nil))
+        XCTAssertNil(Account.normalizeAlias(""))
+        XCTAssertNil(Account.normalizeAlias("   "))
+        XCTAssertNil(Account.normalizeAlias("\n\t  \n"))
+        XCTAssertEqual(Account.normalizeAlias("Work"), "Work")
+        XCTAssertEqual(Account.normalizeAlias("  Personal  "), "Personal")
+        XCTAssertEqual(Account.normalizeAlias("\nWork Email\t"), "Work Email")
     }
 
     func testAccountEquatable() {

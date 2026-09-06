@@ -34,7 +34,7 @@ import os
 /// Critical credential rejection (`.authenticationFailed`) halts the sync loop immediately to prevent account lockout,
 /// sets `needsReauthentication = true` on `AccountManager`, and logs a high-priority diagnostic.
 public actor AccountSyncWorker {
-    private static let logger = Logger(subsystem: "com.ding.mac.v2", category: "AccountSyncWorker")
+    private static let logger = Logger(subsystem: DingLog.subsystem, category: "AccountSyncWorker")
 
     /// The account managed by this worker.
     public let account: Account
@@ -54,6 +54,7 @@ public actor AccountSyncWorker {
     private var syncTask: Task<Void, Never>?
     private var isRunning: Bool = false
     private var currentRetryCount: Int = 0
+    private var hasLoadedBaseline: Bool = false
     private var lastSeenUID: UInt32 = 0
     private var currentUIDValidity: UInt32 = 0
 
@@ -236,7 +237,6 @@ public actor AccountSyncWorker {
     private func runIdleMode() async throws {
         while isRunning && !Task.isCancelled {
             let stream = try await imapClient.startIdle()
-            let completionCoordinator = self.completionCoordinator
 
             // Run IDLE stream with a refresh timer and wake signal
             try await withThrowingTaskGroup(of: Void.self) { group in
@@ -249,7 +249,7 @@ public actor AccountSyncWorker {
                             // RFC 2177: stop IDLE before issuing UID FETCH
                             try await self.imapClient.stopIdle()
                             try await self.fetchAndEmitNewMail()
-                            completionCoordinator.notifyComplete()
+                            self.notifySyncCycleComplete()
                             return // Exit task to restart IDLE loop with fresh state
                         case .idleTimedOut:
                             try await self.imapClient.stopIdle()
@@ -272,7 +272,7 @@ public actor AccountSyncWorker {
                     Self.logger.info("Manual check triggered in IDLE mode for account \(self.account.id.uuidString, privacy: .public)")
                     try await self.imapClient.stopIdle()
                     try await self.fetchAndEmitNewMail()
-                    completionCoordinator.notifyComplete()
+                    self.notifySyncCycleComplete()
                 }
 
                 // Wait for either new mail, refresh timeout, or manual wake signal
@@ -325,6 +325,26 @@ public actor AccountSyncWorker {
     // MARK: - Message Fetching & State Persistence
 
     private func processInitialBaseline(mailboxStatus: MailboxStatus) throws {
+        if hasLoadedBaseline {
+            // State is already held in memory: avoid redundant disk read and JSON decode on every poll cycle.
+            if self.currentUIDValidity != mailboxStatus.uidValidity {
+                // UIDVALIDITY mismatch: server renumbered mailbox. Reset baseline to avoid spamming old history.
+                let baselineUID = mailboxStatus.uidNext > 1 ? mailboxStatus.uidNext - 1 : 0
+                Self.logger.warning("UIDVALIDITY changed (\(self.currentUIDValidity) -> \(mailboxStatus.uidValidity)). Resetting baseline UID to \(baselineUID).")
+
+                let newState = SyncState(
+                    accountID: account.id,
+                    uidValidity: mailboxStatus.uidValidity,
+                    lastSeenUID: baselineUID,
+                    lastSyncedAt: Date()
+                )
+                try syncStateStore.updateState(newState)
+                self.lastSeenUID = baselineUID
+                self.currentUIDValidity = mailboxStatus.uidValidity
+            }
+            return
+        }
+
         let existing = try syncStateStore.state(forAccountID: account.id)
 
         if let state = existing {
@@ -361,6 +381,7 @@ public actor AccountSyncWorker {
             self.lastSeenUID = baselineUID
             self.currentUIDValidity = mailboxStatus.uidValidity
         }
+        self.hasLoadedBaseline = true
     }
 
     private func fetchAndEmitNewMail() async throws {

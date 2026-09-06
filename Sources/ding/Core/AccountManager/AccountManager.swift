@@ -43,7 +43,7 @@ public enum AccountManagerError: LocalizedError, Sendable, Equatable {
 /// concurrency, this guarantees thread safety across SwiftUI views and background services without data races.
 @MainActor
 public final class AccountManager: ObservableObject {
-    private static let logger = Logger(subsystem: "com.ding.mac.v2", category: "AccountManager")
+    private static let logger = Logger(subsystem: DingLog.subsystem, category: "AccountManager")
 
     /// The shared singleton instance of `AccountManager`.
     public static let shared = AccountManager()
@@ -53,6 +53,7 @@ public final class AccountManager: ObservableObject {
 
     private let accountStore: AccountStoreProtocol
     private let keychainService: KeychainServiceProtocol
+    private let syncStateStore: SyncStateStoreProtocol
 
     /// In-memory password cache keyed by account identifier.
     ///
@@ -82,12 +83,15 @@ public final class AccountManager: ObservableObject {
     /// - Parameters:
     ///   - accountStore: The disk store for account metadata. Defaults to `AccountStore()`.
     ///   - keychainService: The credential store for account app passwords. Defaults to `KeychainService.shared`.
+    ///   - syncStateStore: The disk store for account sync state. Defaults to `SyncStateStore()`.
     public init(
         accountStore: AccountStoreProtocol = AccountStore(),
-        keychainService: KeychainServiceProtocol = KeychainService.shared
+        keychainService: KeychainServiceProtocol = KeychainService.shared,
+        syncStateStore: SyncStateStoreProtocol = SyncStateStore()
     ) {
         self.accountStore = accountStore
         self.keychainService = keychainService
+        self.syncStateStore = syncStateStore
         loadAccounts()
     }
 
@@ -132,8 +136,7 @@ public final class AccountManager: ObservableObject {
             throw AccountManagerError.duplicateAccount(email: cleanedEmail)
         }
 
-        let trimmedAlias = alias?.trimmingCharacters(in: .whitespacesAndNewlines)
-        let finalAlias = (trimmedAlias?.isEmpty == false) ? trimmedAlias : nil
+        let finalAlias = Account.normalizeAlias(alias)
 
         let account = Account(
             email: cleanedEmail,
@@ -190,6 +193,13 @@ public final class AccountManager: ObservableObject {
         } catch {
             Self.logger.error("Failed to delete Keychain password for account \(id.uuidString, privacy: .public): \(error.localizedDescription)")
             throw error
+        }
+
+        // Prune orphaned sync state from sync_state.json
+        do {
+            try syncStateStore.removeState(forAccountID: id)
+        } catch {
+            Self.logger.warning("Failed to remove sync state for account \(id.uuidString, privacy: .public): \(error.localizedDescription)")
         }
 
         passwordCache.removeValue(forKey: id)

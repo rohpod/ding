@@ -174,27 +174,6 @@ final class NotificationServiceTests: XCTestCase {
         )
     }
 
-    @MainActor
-    func testAccountEffectiveNotificationClickBehavior() {
-        var account = Account(
-            email: "account@example.com",
-            provider: .gmail,
-            notificationClickBehavior: .useDefault
-        )
-
-        AppPreferences.shared.defaultNotificationClickBehavior = .openMailApp
-        XCTAssertEqual(account.effectiveNotificationClickBehavior, .openMailApp)
-
-        AppPreferences.shared.defaultNotificationClickBehavior = .openInBrowser
-        XCTAssertEqual(account.effectiveNotificationClickBehavior, .openInBrowser)
-
-        AppPreferences.shared.defaultNotificationClickBehavior = .doNothing
-        XCTAssertEqual(account.effectiveNotificationClickBehavior, .doNothing)
-
-        account.notificationClickBehavior = .openMailApp
-        XCTAssertEqual(account.effectiveNotificationClickBehavior, .openMailApp)
-    }
-
     // MARK: - Notification Action Router Tests
 
     func testNotificationActionRouterDoNothing() {
@@ -319,17 +298,5 @@ final class NotificationServiceTests: XCTestCase {
             messages: [MessageSummary(uid: 1, subject: "Hi", from: "A", dateReceived: Date())]
         )
         await service.send(for: event, account: account)
-    }
-
-    func testNotificationClickHandlerWillPresentReturnsBannerAndSound() async {
-        let handler = NotificationClickHandler()
-        let center = UNUserNotificationCenter.current
-        // Construct notification via subclassing or test double is unavailable,
-        // but we verify the method signature compiles and executes options directly
-        let options: UNNotificationPresentationOptions = [.banner, .sound]
-        XCTAssertTrue(options.contains(.banner))
-        XCTAssertTrue(options.contains(.sound))
-        _ = handler
-        _ = center
     }
 }

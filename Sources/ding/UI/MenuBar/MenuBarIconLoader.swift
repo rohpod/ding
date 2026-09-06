@@ -3,7 +3,7 @@ import os
 
 /// Helper responsible for locating and loading the menu bar template icon.
 public enum MenuBarIconLoader {
-    private static let logger = Logger(subsystem: "com.ding.mac.v2", category: "MenuBarIcon")
+    private static let logger = Logger(subsystem: DingLog.subsystem, category: "MenuBarIcon")
 
     /// Loads the custom menu bar template icon asset, configuring it for dynamic macOS tinting.
     ///

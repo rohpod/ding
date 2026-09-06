@@ -85,7 +85,7 @@ public protocol KeychainServiceProtocol: Sendable {
 /// ensures credentials remain accessible in the background once the user has unlocked the Mac
 /// at least once post-boot, while maintaining complete encryption at rest before initial login.
 public final class KeychainService: KeychainServiceProtocol, Sendable {
-    private static let logger = Logger(subsystem: "com.ding.mac.v2", category: "Keychain")
+    private static let logger = Logger(subsystem: DingLog.subsystem, category: "Keychain")
 
     /// Shared singleton instance of `KeychainService`.
     public static let shared = KeychainService()

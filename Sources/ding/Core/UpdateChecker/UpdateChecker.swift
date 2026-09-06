@@ -30,7 +30,7 @@ struct GitHubReleasePayload: Decodable, Sendable {
 /// to provide safe, reactive state updates to SwiftUI views on macOS 13+.
 @MainActor
 public final class UpdateChecker: ObservableObject {
-    private static let logger = Logger(subsystem: "com.ding.mac.v2", category: "UpdateChecker")
+    private static let logger = Logger(subsystem: DingLog.subsystem, category: "UpdateChecker")
 
     /// The shared singleton instance of `UpdateChecker`.
     public static let shared = UpdateChecker()
@@ -63,7 +63,7 @@ public final class UpdateChecker: ObservableObject {
         endpoint: URL = defaultEndpoint,
         session: UpdateCheckingSession = URLSession.shared,
         currentVersionProvider: @escaping @Sendable () -> String = {
-            Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "0.1.0"
+            Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "0.2.0"
         }
     ) {
         self.endpoint = endpoint
@@ -112,18 +112,12 @@ public final class UpdateChecker: ObservableObject {
             (data, response) = try await session.data(for: request)
         } catch {
             Self.logger.warning("Network request failed during update check: \(error.localizedDescription, privacy: .public)")
-            let result = UpdateCheckResult.failed(reason: "Couldn't check for updates right now.")
-            self.lastResult = result
-            AppPreferences.shared.lastUpdateCheckDate = Date()
-            return result
+            return recordResult(.failed(reason: "Couldn't check for updates right now."))
         }
 
         guard let httpResponse = response as? HTTPURLResponse else {
             Self.logger.error("Unexpected non-HTTP response received during update check.")
-            let result = UpdateCheckResult.failed(reason: "Invalid server response.")
-            self.lastResult = result
-            AppPreferences.shared.lastUpdateCheckDate = Date()
-            return result
+            return recordResult(.failed(reason: "Invalid server response."))
         }
 
         Self.logger.debug("GitHub API response status code: \(httpResponse.statusCode)")
@@ -131,28 +125,19 @@ public final class UpdateChecker: ObservableObject {
         // Handle HTTP Rate Limiting (403)
         if httpResponse.statusCode == 403 {
             Self.logger.warning("GitHub API rate limit exceeded or access forbidden (HTTP 403).")
-            let result = UpdateCheckResult.failed(reason: "Rate limit reached. Please try again later.")
-            self.lastResult = result
-            AppPreferences.shared.lastUpdateCheckDate = Date()
-            return result
+            return recordResult(.failed(reason: "Rate limit reached. Please try again later."))
         }
 
         // Handle Not Found (404) - e.g. repository has no published releases yet
         if httpResponse.statusCode == 404 {
             Self.logger.info("GitHub API returned 404 Not Found (no releases published yet).")
-            let result = UpdateCheckResult.failed(reason: "No releases found.")
-            self.lastResult = result
-            AppPreferences.shared.lastUpdateCheckDate = Date()
-            return result
+            return recordResult(.failed(reason: "No releases found."))
         }
 
         // Validate HTTP 200..299
         guard (200...299).contains(httpResponse.statusCode) else {
             Self.logger.warning("GitHub API returned error status: \(httpResponse.statusCode)")
-            let result = UpdateCheckResult.failed(reason: "Couldn't check for updates right now (status \(httpResponse.statusCode)).")
-            self.lastResult = result
-            AppPreferences.shared.lastUpdateCheckDate = Date()
-            return result
+            return recordResult(.failed(reason: "Couldn't check for updates right now (status \(httpResponse.statusCode))."))
         }
 
         // Parse JSON payload
@@ -161,18 +146,12 @@ public final class UpdateChecker: ObservableObject {
             releasePayload = try JSONDecoder().decode(GitHubReleasePayload.self, from: data)
         } catch {
             Self.logger.error("Failed to parse GitHub release JSON: \(error.localizedDescription, privacy: .public)")
-            let result = UpdateCheckResult.failed(reason: "Failed to parse release information.")
-            self.lastResult = result
-            AppPreferences.shared.lastUpdateCheckDate = Date()
-            return result
+            return recordResult(.failed(reason: "Failed to parse release information."))
         }
 
         guard let remoteSemVer = SemanticVersion(string: releasePayload.tagName) else {
             Self.logger.warning("Failed to parse remote release tag name: \(releasePayload.tagName, privacy: .public)")
-            let result = UpdateCheckResult.failed(reason: "Unrecognized release version tag: \(releasePayload.tagName)")
-            self.lastResult = result
-            AppPreferences.shared.lastUpdateCheckDate = Date()
-            return result
+            return recordResult(.failed(reason: "Unrecognized release version tag: \(releasePayload.tagName)"))
         }
 
         let result: UpdateCheckResult
@@ -190,6 +169,10 @@ public final class UpdateChecker: ObservableObject {
             result = .upToDate(currentVersion: currentVersionString)
         }
 
+        return recordResult(result)
+    }
+
+    private func recordResult(_ result: UpdateCheckResult) -> UpdateCheckResult {
         self.lastResult = result
         AppPreferences.shared.lastUpdateCheckDate = Date()
         return result

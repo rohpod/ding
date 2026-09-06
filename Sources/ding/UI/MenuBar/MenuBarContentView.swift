@@ -3,7 +3,6 @@ import SwiftUI
 /// SwiftUI view providing the drop-down menu items for ding's menu bar status item.
 struct MenuBarContentView: View {
     @ObservedObject private var syncEngine = SyncEngine.shared
-    @ObservedObject private var accountManager = AccountManager.shared
 
     var body: some View {
         Button("Check for Mail") {

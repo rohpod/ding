@@ -16,7 +16,7 @@ import os
 /// actor safety across SwiftUI views and non-UI callers (such as `AppDelegate`) without data races.
 @MainActor
 public final class AppPreferences: ObservableObject {
-    private static let logger = Logger(subsystem: "com.ding.mac.v2", category: "Preferences")
+    private static let logger = Logger(subsystem: DingLog.subsystem, category: "Preferences")
 
     /// The shared singleton instance of `AppPreferences`.
     public static let shared = AppPreferences()

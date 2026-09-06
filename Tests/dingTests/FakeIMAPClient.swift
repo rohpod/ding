@@ -1,4 +1,5 @@
 import Foundation
+@testable import ding
 
 /// In-memory test fake conforming to `IMAPConnecting`.
 ///

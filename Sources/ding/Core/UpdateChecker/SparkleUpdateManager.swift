@@ -8,7 +8,7 @@ import Sparkle
 /// to guarantee thread safety across SwiftUI and AppKit components.
 @MainActor
 public final class SparkleUpdateManager {
-    private static let logger = Logger(subsystem: "com.ding.mac.v2", category: "SparkleUpdateManager")
+    private static let logger = Logger(subsystem: DingLog.subsystem, category: "SparkleUpdateManager")
 
     /// The shared singleton instance of `SparkleUpdateManager`.
     public static let shared = SparkleUpdateManager()
@@ -59,9 +59,12 @@ public final class SparkleUpdateManager {
             return
         }
 
-        updater.automaticallyChecksForUpdates = preferences.isAutomaticUpdateCheckEnabled
+        // Per architectural decision: disable Sparkle's own automatic background update-checking schedule.
+        // Ding's 24-hour background task using UpdateChecker exclusively manages background checking against GitHub Releases API.
+        // Sparkle is retained for the actual update installation and automatic download steps.
+        updater.automaticallyChecksForUpdates = false
         updater.automaticallyDownloadsUpdates = preferences.isAutomaticUpdateInstallEnabled
 
-        Self.logger.info("Applied update preferences to Sparkle (autoCheck: \(preferences.isAutomaticUpdateCheckEnabled, privacy: .public), autoInstall: \(preferences.isAutomaticUpdateInstallEnabled, privacy: .public))")
+        Self.logger.info("Applied update preferences to Sparkle (autoCheck: false [custom scheduler active], autoInstall: \(preferences.isAutomaticUpdateInstallEnabled, privacy: .public))")
     }
 }

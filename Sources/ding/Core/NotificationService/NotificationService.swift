@@ -116,8 +116,8 @@ public struct NotificationContentBuilder {
 /// throws `NSInternalInconsistencyException`. This service guards calls against
 /// `NotificationPermissionManager.isRunningInAppBundle`.
 @MainActor
-public final class NotificationService: Sendable {
-    private static let logger = Logger(subsystem: "com.ding.mac.v2", category: "NotificationService")
+public final class NotificationService {
+    private static let logger = Logger(subsystem: DingLog.subsystem, category: "NotificationService")
 
     /// Shared singleton instance of `NotificationService`.
     public static let shared = NotificationService()

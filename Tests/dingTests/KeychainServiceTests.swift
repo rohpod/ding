@@ -144,7 +144,7 @@ final class KeychainServiceTests: XCTestCase {
             switch error {
             case .unhandledStatus(let status) where status == errSecInteractionNotAllowed || status == -34018:
                 // Expected when running in headless CI / unbundled sandboxed test runner without interactive keychain
-                print("Skipping live system Keychain test in restricted execution environment (status: \(status))")
+                break
             default:
                 XCTFail("Unexpected Keychain error: \(error)")
             }

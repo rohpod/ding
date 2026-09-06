@@ -26,8 +26,8 @@ public enum LoginItemError: LocalizedError, Sendable {
 /// 3. It exposes explicit registration status (`.enabled`, `.notRegistered`, `.requiresApproval`, `.notFound`)
 ///    rather than an opaque boolean, enabling robust error detection and handling.
 @MainActor
-public final class LoginItemManager: Sendable {
-    private static let logger = Logger(subsystem: "com.ding.mac.v2", category: "LoginItem")
+public final class LoginItemManager {
+    private static let logger = Logger(subsystem: DingLog.subsystem, category: "LoginItem")
 
     /// Shared singleton instance of `LoginItemManager`.
     public static let shared = LoginItemManager()
@@ -51,10 +51,7 @@ public final class LoginItemManager: Sendable {
     /// This checks the live `SMAppService.status` rather than a cached local preference,
     /// ensuring that manual changes made by the user in macOS System Settings are accurately reflected.
     public var isLoginItemEnabled: Bool {
-        guard Self.isRunningInAppBundle else {
-            return false
-        }
-        return appService.status == .enabled
+        status == .enabled
     }
 
     /// Current status of the login item service in macOS.
