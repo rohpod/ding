@@ -75,6 +75,40 @@ public actor AccountSyncWorker {
         }
     }
 
+    /// Queries the current absolute unread message count for this account's inbox.
+    ///
+    /// Reuses the existing connection if connected, or temporarily opens and authenticates a new connection.
+    /// Keeps this check separate from `checkNow()` and `fetchAndEmitNewMail()`, leaving baseline UID state untouched.
+    ///
+    /// - Returns: The total unread email count in INBOX.
+    /// - Throws: An error if connection, authentication, or query fails.
+    public func checkUnreadCount() async throws -> Int {
+        let wasConnected = await imapClient.isConnected
+        if !wasConnected {
+            do {
+                let password = try await passwordProvider(account.id)
+                try await imapClient.connect(host: account.provider.imapHost, port: account.provider.imapPort)
+                try await imapClient.login(email: account.email, password: password)
+            } catch {
+                await imapClient.disconnect()
+                throw error
+            }
+        }
+
+        do {
+            let count = try await imapClient.fetchUnreadCount()
+            if !wasConnected {
+                await imapClient.disconnect()
+            }
+            return count
+        } catch {
+            if !wasConnected {
+                await imapClient.disconnect()
+            }
+            throw error
+        }
+    }
+
     private nonisolated func notifySyncCycleComplete() {
         completionCoordinator.notifyComplete()
     }

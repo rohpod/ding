@@ -18,9 +18,18 @@ import os
 ///    Network I/O, socket reading, IDLE event handling, and exponential backoff timing run concurrently
 ///    in background tasks, preventing network delays or stalls on one account from blocking other accounts
 ///    or freezing the main application UI.
+/// Types of notifications generated as a result of manual mail checking.
+public enum ManualCheckNotification: Equatable, Sendable {
+    /// Zero unread emails detected across checked accounts.
+    case zeroUnread
+
+    /// Positive unread email count detected for a specific account.
+    case accountUnread(account: Account, count: Int)
+}
+
 @MainActor
 public final class SyncEngine: ObservableObject {
-    private static let logger = Logger(subsystem: DingLog.subsystem, category: "SyncEngine")
+    nonisolated private static let logger = Logger(subsystem: DingLog.subsystem, category: "SyncEngine")
 
     /// The shared singleton instance of `SyncEngine`.
     public static let shared = SyncEngine()
@@ -30,6 +39,9 @@ public final class SyncEngine: ObservableObject {
 
     /// Callback invoked whenever any managed account worker detects new mail.
     public var onNewMailDetected: ((NewMailEvent) -> Void)?
+
+    /// Callback invoked whenever a manual mail check produces a notification (injectable for unit testing).
+    public var onManualCheckNotification: ((ManualCheckNotification) -> Void)?
 
     /// Currently active workers keyed by `Account.id`.
     public private(set) var workers: [UUID: AccountSyncWorker] = [:]
@@ -44,6 +56,7 @@ public final class SyncEngine: ObservableObject {
 
     private let accountManager: AccountManager
     private let appPreferences: AppPreferences
+    private let notificationService: NotificationService
     private let workerFactory: WorkerFactory
     private var cancellables = Set<AnyCancellable>()
     private var accountObservation: AnyCancellable?
@@ -54,14 +67,17 @@ public final class SyncEngine: ObservableObject {
     /// - Parameters:
     ///   - accountManager: Account store manager to observe. Defaults to `AccountManager.shared`.
     ///   - appPreferences: Global preferences store. Defaults to `AppPreferences.shared`.
+    ///   - notificationService: Notification delivery service. Defaults to `NotificationService.shared`.
     ///   - workerFactory: Factory closure for generating account workers (injected in unit tests).
     public init(
         accountManager: AccountManager = .shared,
         appPreferences: AppPreferences = .shared,
+        notificationService: NotificationService = .shared,
         workerFactory: WorkerFactory? = nil
     ) {
         self.accountManager = accountManager
         self.appPreferences = appPreferences
+        self.notificationService = notificationService
         let defaultFrequency = appPreferences.defaultSyncFrequency
 
         self.workerFactory = workerFactory ?? { account, onNewMail in
@@ -132,7 +148,10 @@ public final class SyncEngine: ObservableObject {
 
     // MARK: - Manual Mail Checking
 
-    /// Forces an immediate manual check for mail on a specific account, resetting its poll or IDLE cycle.
+    /// Forces an immediate manual check for unread mail on a specific account.
+    ///
+    /// If zero unread emails are found, delivers a single "You have 0 unread emails" notification.
+    /// If unread emails are found, delivers a notification specifying that account's unread count.
     ///
     /// - Parameter accountID: The unique identifier of the account to check.
     public func checkMail(accountID: UUID) async {
@@ -140,24 +159,88 @@ public final class SyncEngine: ObservableObject {
             Self.logger.warning("Attempted to check mail for unregistered account: \(accountID.uuidString, privacy: .public)")
             return
         }
+        guard let account = accountManager.accounts.first(where: { $0.id == accountID }) else {
+            Self.logger.warning("Account model not found for unregistered account: \(accountID.uuidString, privacy: .public)")
+            return
+        }
+
         Self.logger.info("Triggering manual mail check for account: \(accountID.uuidString, privacy: .public)")
-        await worker.checkNow()
+        do {
+            let count = try await worker.checkUnreadCount()
+            if count == 0 {
+                await deliverZeroUnreadNotification()
+            } else {
+                await deliverAccountUnreadNotification(account: account, count: count)
+            }
+        } catch {
+            Self.logger.error("Failed to check unread count for account \(accountID.uuidString, privacy: .public): \(error.localizedDescription, privacy: .public)")
+        }
     }
 
-    /// Forces an immediate manual check for mail concurrently across all accounts configured to participate in manual checks.
+    /// Forces an immediate manual check for unread mail concurrently across all accounts configured to participate in manual checks.
+    ///
+    /// If total unread across all included accounts is 0, delivers a single "You have 0 unread emails" notification.
+    /// If any account has unread mail, delivers one notification per account with unread mail (accounts with 0 unread are skipped).
     public func checkAllMail() async {
         let eligibleAccounts = accountManager.accounts.filter { $0.includeInManualCheck }
         Self.logger.info("Triggering manual mail check for \(eligibleAccounts.count, privacy: .public) eligible account(s)")
 
-        await withTaskGroup(of: Void.self) { group in
+        guard !eligibleAccounts.isEmpty else {
+            Self.logger.info("No eligible accounts configured for manual check; delivering zero-unread notification")
+            await deliverZeroUnreadNotification()
+            return
+        }
+
+        var results: [(account: Account, unreadCount: Int)] = []
+
+        await withTaskGroup(of: (Account, Int)?.self) { group in
             for account in eligibleAccounts {
                 if let worker = self.workers[account.id] {
                     group.addTask {
-                        await worker.checkNow()
+                        do {
+                            let count = try await worker.checkUnreadCount()
+                            return (account, count)
+                        } catch {
+                            Self.logger.error("Failed to check unread count for account \(account.id.uuidString, privacy: .public): \(error.localizedDescription, privacy: .public)")
+                            return nil
+                        }
                     }
                 }
             }
+
+            for await result in group {
+                if let result = result {
+                    results.append(result)
+                }
+            }
         }
+
+        guard !results.isEmpty else {
+            Self.logger.warning("All manual check queries failed or yielded no results; skipping notifications")
+            return
+        }
+
+        let totalUnread = results.reduce(0) { $0 + $1.unreadCount }
+
+        if totalUnread == 0 {
+            await deliverZeroUnreadNotification()
+        } else {
+            for result in results where result.unreadCount > 0 {
+                await deliverAccountUnreadNotification(account: result.account, count: result.unreadCount)
+            }
+        }
+    }
+
+    private func deliverZeroUnreadNotification() async {
+        Self.logger.info("Delivering zero unread notification")
+        onManualCheckNotification?(.zeroUnread)
+        await notificationService.sendZeroUnreadNotification()
+    }
+
+    private func deliverAccountUnreadNotification(account: Account, count: Int) async {
+        Self.logger.info("Delivering unread notification for \(account.displayName, privacy: .public): \(count, privacy: .public)")
+        onManualCheckNotification?(.accountUnread(account: account, count: count))
+        await notificationService.sendAccountUnreadNotification(account: account, unreadCount: count)
     }
 
     // MARK: - Account Worker Synchronization

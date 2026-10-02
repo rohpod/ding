@@ -401,6 +401,73 @@ public actor NIOIMAPClient: IMAPConnecting {
         }
     }
 
+    /// Queries the total number of unread (unseen) messages in the primary inbox.
+    public func fetchUnreadCount() async throws -> Int {
+        guard self.isConnected, let channel = self.channel, let handler = self.responseHandler else {
+            throw IMAPClientError.notConnected
+        }
+
+        if self.activeIdleTag != nil {
+            try await self.stopIdle()
+        }
+
+        Self.logger.info("Fetching unread count for INBOX on \(self.currentHost ?? "server", privacy: .public)")
+
+        let tag = nextTag()
+        let command = Command.status(MailboxName.inbox, [.unseenCount])
+        let taggedCommand = TaggedCommand(tag: tag, command: command)
+        let message = IMAPClientHandler.Message.part(.tagged(taggedCommand))
+
+        handler.beginCommand(tag: tag)
+
+        do {
+            let response = try await withTimeout(seconds: 15) {
+                try await channel.writeAndFlush(message)
+                return try await handler.waitForCommand(tag: tag)
+            }
+
+            switch response.tagged.state {
+            case .ok:
+                break
+            case .no(let responseText):
+                Self.logger.warning("STATUS INBOX failed (NO): \(responseText.text, privacy: .public)")
+                throw IMAPClientError.unexpectedResponse("STATUS INBOX rejected: \(responseText.text)")
+            case .bad(let responseText):
+                Self.logger.warning("STATUS INBOX failed (BAD): \(responseText.text, privacy: .public)")
+                throw IMAPClientError.unexpectedResponse("STATUS INBOX syntax error: \(responseText.text)")
+            }
+
+            var unseenCount: Int?
+
+            for untagged in response.untagged {
+                switch untagged {
+                case .mailboxData(let data):
+                    switch data {
+                    case .status(let mailboxName, let status):
+                        if mailboxName.isInbox {
+                            unseenCount = status.unseenCount
+                        }
+                    default:
+                        break
+                    }
+                default:
+                    break
+                }
+            }
+
+            let resolvedCount = unseenCount ?? 0
+            Self.logger.info("STATUS INBOX returned \(resolvedCount, privacy: .public) unread message(s)")
+            return resolvedCount
+        } catch let clientError as IMAPClientError {
+            throw clientError
+        } catch is CancellationError {
+            throw IMAPClientError.timeout
+        } catch {
+            let mapped = self.mapError(error)
+            throw mapped
+        }
+    }
+
     /// Queries the server capabilities to determine if the `IDLE` extension (RFC 2177) is supported.
     public func supportsIdle() async throws -> Bool {
         guard self.isConnected, let channel = self.channel, let handler = self.responseHandler else {

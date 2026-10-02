@@ -137,4 +137,10 @@ public protocol IMAPConnecting: Sendable {
     /// - Returns: `true` if `IDLE` is advertised in the server's capabilities; `false` otherwise.
     /// - Throws: `IMAPClientError.notConnected` or network errors.
     func supportsIdle() async throws -> Bool
+
+    /// Queries the total number of unread (unseen) messages in the primary inbox.
+    ///
+    /// - Returns: The unread message count.
+    /// - Throws: `IMAPClientError.notConnected`, `IMAPClientError.timeout`, or network errors.
+    func fetchUnreadCount() async throws -> Int
 }

@@ -67,6 +67,15 @@ public actor FakeIMAPClient: IMAPConnecting {
     /// The number of times `supportsIdle()` has been called.
     public private(set) var supportsIdleCallCount: Int = 0
 
+    /// The number of times `fetchUnreadCount()` has been called.
+    public private(set) var fetchUnreadCountCallCount: Int = 0
+
+    /// Pre-configured unread count returned by `fetchUnreadCount()`.
+    public var unreadCount: Int = 0
+
+    /// Pre-configured error thrown by `fetchUnreadCount()`.
+    public var fetchUnreadCountError: IMAPClientError?
+
     /// The most recent host passed to `connect(host:port:)`.
     public private(set) var lastConnectedHost: String?
 
@@ -138,6 +147,16 @@ public actor FakeIMAPClient: IMAPConnecting {
     /// Sets the error thrown by future `startIdle()` calls.
     public func setStartIdleError(_ error: IMAPClientError?) {
         self.startIdleError = error
+    }
+
+    /// Sets the unread count returned by `fetchUnreadCount()`.
+    public func setUnreadCount(_ count: Int) {
+        self.unreadCount = count
+    }
+
+    /// Sets the error thrown by future `fetchUnreadCount()` calls.
+    public func setFetchUnreadCountError(_ error: IMAPClientError?) {
+        self.fetchUnreadCountError = error
     }
 
     /// Simulates connecting to an IMAP server.
@@ -247,6 +266,18 @@ public actor FakeIMAPClient: IMAPConnecting {
         return supportsIdleValue
     }
 
+    /// Simulates querying the unread message count for INBOX.
+    public func fetchUnreadCount() async throws -> Int {
+        fetchUnreadCountCallCount += 1
+        guard isConnected else {
+            throw IMAPClientError.notConnected
+        }
+        if let error = fetchUnreadCountError {
+            throw error
+        }
+        return unreadCount
+    }
+
     /// Test helper to emit an `IdleEvent` into the currently active IDLE stream.
     public func yieldIdleEvent(_ event: IdleEvent) {
         idleContinuation?.yield(event)
@@ -268,6 +299,7 @@ public actor FakeIMAPClient: IMAPConnecting {
         startIdleCallCount = 0
         stopIdleCallCount = 0
         supportsIdleCallCount = 0
+        fetchUnreadCountCallCount = 0
         lastConnectedHost = nil
         lastConnectedPort = nil
         lastLoginEmail = nil
