@@ -30,7 +30,6 @@ public final class AppPreferences: ObservableObject {
         static let isOpenAtLoginEnabled = "ding.preference.isOpenAtLoginEnabled"
         static let isAutomaticUpdateCheckEnabled = "ding.preference.isAutomaticUpdateCheckEnabled"
         static let isAutomaticUpdateInstallEnabled = "ding.preference.isAutomaticUpdateInstallEnabled"
-        static let lastUpdateCheckDate = "ding.preference.lastUpdateCheckDate"
     }
 
     private let userDefaults: UserDefaults
@@ -106,16 +105,6 @@ public final class AppPreferences: ObservableObject {
         }
     }
 
-    /// The timestamp when an update check was last performed, if any.
-    ///
-    /// Defaults to `nil`.
-    @Published public var lastUpdateCheckDate: Date? {
-        didSet {
-            userDefaults.set(lastUpdateCheckDate, forKey: Keys.lastUpdateCheckDate)
-            Self.logger.debug("Saved lastUpdateCheckDate: \(String(describing: self.lastUpdateCheckDate), privacy: .public)")
-        }
-    }
-
     // MARK: - Initialization
 
     /// Initializes a preferences store backed by the specified `UserDefaults`.
@@ -172,9 +161,6 @@ public final class AppPreferences: ObservableObject {
         } else {
             self.isAutomaticUpdateInstallEnabled = false
         }
-
-        // lastUpdateCheckDate: default nil
-        self.lastUpdateCheckDate = userDefaults.object(forKey: Keys.lastUpdateCheckDate) as? Date
 
         Self.logger.info("AppPreferences initialized (sync: \(self.defaultSyncFrequency.rawValue, privacy: .public), icon: \(self.isMenuBarIconVisible, privacy: .public), loginItem: \(self.isOpenAtLoginEnabled, privacy: .public), autoCheck: \(self.isAutomaticUpdateCheckEnabled, privacy: .public), autoInstall: \(self.isAutomaticUpdateInstallEnabled, privacy: .public))")
     }

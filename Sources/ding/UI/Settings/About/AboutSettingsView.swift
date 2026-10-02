@@ -11,6 +11,16 @@ struct AboutSettingsView: View {
     private static let repoURL = URL(string: "https://github.com/rohpod/ding")!
     private static let licenseURL = URL(string: "https://github.com/rohpod/ding/blob/main/LICENSE")!
 
+    private static let appIcon: NSImage? = {
+        if let iconURL = Bundle.main.url(forResource: "AppIcon", withExtension: "png"),
+           let nsImage = NSImage(contentsOf: iconURL) {
+            return nsImage
+        } else if let icon = NSImage(named: NSImage.applicationIconName) {
+            return icon
+        }
+        return nil
+    }()
+
     private var appVersion: String {
         Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "0.3.0"
     }
@@ -20,13 +30,7 @@ struct AboutSettingsView: View {
             // MARK: - App Identity Section
             Section {
                 HStack(alignment: .center, spacing: 16) {
-                    if let iconURL = Bundle.main.url(forResource: "AppIcon", withExtension: "png"),
-                       let nsImage = NSImage(contentsOf: iconURL) {
-                        Image(nsImage: nsImage)
-                            .resizable()
-                            .aspectRatio(contentMode: .fit)
-                            .frame(width: 56, height: 56)
-                    } else if let icon = NSImage(named: NSImage.applicationIconName) {
+                    if let icon = Self.appIcon {
                         Image(nsImage: icon)
                             .resizable()
                             .aspectRatio(contentMode: .fit)

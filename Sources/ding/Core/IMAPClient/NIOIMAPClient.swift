@@ -741,6 +741,8 @@ private final class IMAPResponseHandler: ChannelInboundHandler, @unchecked Senda
     private var untaggedBuffers: [String: [ResponsePayload]] = [:]
     private var fetchBuffers: [String: [FetchResponse]] = [:]
     private var cancelledCommandTags: Set<String> = []
+    private var cancelledTagOrder: [String] = []
+    private let maxCancelledTags = 64
     private var idleContinuation: AsyncThrowingStream<IdleEvent, any Error>.Continuation?
     private var idleStartContinuation: CheckedContinuation<Void, any Error>?
     private var caughtError: (any Error)?
@@ -771,6 +773,7 @@ private final class IMAPResponseHandler: ChannelInboundHandler, @unchecked Senda
                 continuation.resume(returning: parsed)
             } else if cancelledCommandTags.remove(taggedResponse.tag) != nil {
                 // Command was already cancelled/timed out; drop late response to prevent leak
+                cancelledTagOrder.removeAll { $0 == taggedResponse.tag }
                 lock.unlock()
             } else {
                 bufferedCommandResponses[taggedResponse.tag] = parsed
@@ -885,7 +888,9 @@ private final class IMAPResponseHandler: ChannelInboundHandler, @unchecked Senda
         activeCommandTag = tag
         untaggedBuffers[tag] = []
         fetchBuffers[tag] = []
-        cancelledCommandTags.remove(tag)
+        if cancelledCommandTags.remove(tag) != nil {
+            cancelledTagOrder.removeAll { $0 == tag }
+        }
         lock.unlock()
     }
 
@@ -969,7 +974,13 @@ private final class IMAPResponseHandler: ChannelInboundHandler, @unchecked Senda
         if activeCommandTag == tag {
             activeCommandTag = nil
         }
-        cancelledCommandTags.insert(tag)
+        if cancelledCommandTags.insert(tag).inserted {
+            cancelledTagOrder.append(tag)
+            if cancelledTagOrder.count > maxCancelledTags {
+                let oldest = cancelledTagOrder.removeFirst()
+                cancelledCommandTags.remove(oldest)
+            }
+        }
         lock.unlock()
         continuation?.resume(throwing: CancellationError())
     }
@@ -989,6 +1000,7 @@ private final class IMAPResponseHandler: ChannelInboundHandler, @unchecked Senda
         untaggedBuffers.removeAll()
         fetchBuffers.removeAll()
         cancelledCommandTags.removeAll()
+        cancelledTagOrder.removeAll()
         activeCommandTag = nil
         lock.unlock()
 

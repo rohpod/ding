@@ -49,7 +49,6 @@ public actor AccountSyncWorker {
     private let idleRefreshDuration: Duration
 
     private let wakeSignal = WakeSignal()
-    private nonisolated let completionCoordinator = SyncCompletionCoordinator()
 
     private var syncTask: Task<Void, Never>?
     private var isRunning: Bool = false
@@ -64,21 +63,10 @@ public actor AccountSyncWorker {
         isRunning
     }
 
-    /// Forces an immediate synchronization cycle, interrupting any active polling sleep or IDLE wait.
-    ///
-    /// Suspends until the resulting sync cycle has completed (or failed) before returning.
-    public func checkNow() async {
-        guard isRunning else { return }
-        await withCheckedContinuation { continuation in
-            self.completionCoordinator.addWaiter(continuation)
-            self.wakeSignal.signal()
-        }
-    }
-
     /// Queries the current absolute unread message count for this account's inbox.
     ///
     /// Reuses the existing connection if connected, or temporarily opens and authenticates a new connection.
-    /// Keeps this check separate from `checkNow()` and `fetchAndEmitNewMail()`, leaving baseline UID state untouched.
+    /// Keeps this check separate from `fetchAndEmitNewMail()`, leaving baseline UID state untouched.
     ///
     /// - Returns: The total unread email count in INBOX.
     /// - Throws: An error if connection, authentication, or query fails.
@@ -107,10 +95,6 @@ public actor AccountSyncWorker {
             }
             throw error
         }
-    }
-
-    private nonisolated func notifySyncCycleComplete() {
-        completionCoordinator.notifyComplete()
     }
 
     /// Initializes a new per-account sync worker.
@@ -185,7 +169,6 @@ public actor AccountSyncWorker {
         syncTask?.cancel()
         syncTask = nil
         wakeSignal.signal()
-        notifySyncCycleComplete()
         await imapClient.disconnect()
     }
 
@@ -228,24 +211,20 @@ public actor AccountSyncWorker {
             } catch let error as IMAPClientError where error == .authenticationFailed {
                 Self.logger.fault("Authentication failed for account \(self.account.id.uuidString, privacy: .public). Halting worker and flagging reauthentication requirement.")
                 isRunning = false
-                notifySyncCycleComplete()
                 await reauthenticationHandler?(account.id)
                 await imapClient.disconnect()
                 break
             } catch let error as KeychainError where error == .accessDeniedOrCancelled {
                 Self.logger.fault("Keychain access denied or cancelled for account \(self.account.id.uuidString, privacy: .public). Halting worker and flagging reauthentication requirement.")
                 isRunning = false
-                notifySyncCycleComplete()
                 await reauthenticationHandler?(account.id)
                 await imapClient.disconnect()
                 break
             } catch is CancellationError {
                 Self.logger.debug("Sync worker loop cancelled for account \(self.account.id.uuidString, privacy: .public)")
-                notifySyncCycleComplete()
                 break
             } catch {
                 await imapClient.disconnect()
-                notifySyncCycleComplete()
                 guard isRunning && !Task.isCancelled else { break }
 
                 let backoffDelay = computeBackoffDelay()
@@ -291,7 +270,6 @@ public actor AccountSyncWorker {
                             // RFC 2177: stop IDLE before issuing UID FETCH
                             try await self.imapClient.stopIdle()
                             try await self.fetchAndEmitNewMail()
-                            self.notifySyncCycleComplete()
                             return // Exit task to restart IDLE loop with fresh state
                         case .idleTimedOut:
                             try await self.imapClient.stopIdle()
@@ -314,7 +292,6 @@ public actor AccountSyncWorker {
                     Self.logger.info("Manual check triggered in IDLE mode for account \(self.account.id.uuidString, privacy: .public)")
                     try await self.imapClient.stopIdle()
                     try await self.fetchAndEmitNewMail()
-                    self.notifySyncCycleComplete()
                 }
 
                 // Wait for either new mail, refresh timeout, or manual wake signal
@@ -343,10 +320,7 @@ public actor AccountSyncWorker {
         // 2. Disconnect to preserve RAM and power in polling mode
         await imapClient.disconnect()
 
-        // 3. Notify waiters that this sync pass has completed
-        notifySyncCycleComplete()
-
-        // 4. Sleep until the next polling cycle or wake signal
+        // 3. Sleep until the next polling cycle or wake signal
         Self.logger.debug("Poll completed; sleeping for \(interval.components.seconds)s")
         try await withThrowingTaskGroup(of: Void.self) { group in
             group.addTask {
@@ -509,29 +483,3 @@ private final class WakeSignal: @unchecked Sendable {
         }
     }
 }
-
-// MARK: - Sync Completion Coordination
-
-/// Thread-safe coordinator for tracking callers awaiting the completion of an active synchronization pass.
-private final class SyncCompletionCoordinator: @unchecked Sendable {
-    private let lock = NSLock()
-    private var waiters: [CheckedContinuation<Void, Never>] = []
-
-    func addWaiter(_ continuation: CheckedContinuation<Void, Never>) {
-        lock.lock()
-        waiters.append(continuation)
-        lock.unlock()
-    }
-
-    func notifyComplete() {
-        lock.lock()
-        let all = waiters
-        waiters.removeAll()
-        lock.unlock()
-        for waiter in all {
-            waiter.resume()
-        }
-    }
-}
-
-

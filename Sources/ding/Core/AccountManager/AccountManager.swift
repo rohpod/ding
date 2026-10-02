@@ -185,6 +185,7 @@ public final class AccountManager: ObservableObject {
         }
 
         // Delete credential from Keychain
+        var keychainError: (any Error)?
         do {
             try keychainService.deletePassword(forAccountID: id)
         } catch KeychainError.itemNotFound {
@@ -192,7 +193,7 @@ public final class AccountManager: ObservableObject {
             Self.logger.debug("Credential was already absent from Keychain for account: \(id.uuidString, privacy: .public)")
         } catch {
             Self.logger.error("Failed to delete Keychain password for account \(id.uuidString, privacy: .public): \(error.localizedDescription)")
-            throw error
+            keychainError = error
         }
 
         // Prune orphaned sync state from sync_state.json
@@ -204,6 +205,10 @@ public final class AccountManager: ObservableObject {
 
         passwordCache.removeValue(forKey: id)
         Self.logger.debug("Invalidated password cache for removed account \(id.uuidString, privacy: .public)")
+
+        if let keychainError {
+            throw keychainError
+        }
 
         Self.logger.info("Successfully removed account \(id.uuidString, privacy: .public)")
     }
