@@ -8,6 +8,13 @@ ding runs quietly in the background, watches your inbox over IMAP, and notifies 
 
 > **There is no server.** ding has no backend, no account system, and no company behind it collecting your data. It talks directly to your mail provider's own IMAP server over TLS and nowhere else. Your credentials are stored only in your Mac's Keychain. They never leave your machine, and the entire codebase is open for you to verify that yourself.
 
+## Screenshots
+
+| | |
+|---|---|
+| ![General settings](.github/screenshots/01_general.png) <br> **General** | ![Accounts settings](.github/screenshots/02_accounts.png) <br> **Accounts** |
+| ![About settings](.github/screenshots/03_about.png) <br> **About** | ![Menu bar](.github/screenshots/04_menubar.png) <br> **Menu Bar** |
+
 ## Features
 
 - **Native macOS app** — built entirely in Swift, no cross-platform framework overhead
@@ -99,11 +106,20 @@ New-mail detection is based on IMAP UIDs, so you won't get duplicate notificatio
 - No analytics, no telemetry, no third-party servers involved beyond your mail provider and a background check via Sparkle (against this repo's GitHub releases) to see if a new version exists. That check sends nothing about you, just asks for the latest release tag.
 - All source code is in this repository. Nothing runs that you can't read yourself.
 
+## Support
+
+If ding's useful to you, the best way to support it is by using it: [open an issue](https://github.com/rohpod/ding/issues) with feedback or bugs, or [contribute](CONTRIBUTING.md) code, docs, or tests.
+
+If you'd like to support the project financially instead, that's appreciated too, entirely optional, and never required to use any feature:
+
+[![GitHub Sponsors](https://img.shields.io/badge/GitHub%20Sponsors-EA4AAA?style=for-the-badge&logo=githubsponsors&logoColor=white)](https://github.com/sponsors/rohpod)
+[![Buy Me a Coffee](https://img.shields.io/badge/Buy%20Me%20a%20Coffee-FFDD00?style=for-the-badge&logo=buymeacoffee&logoColor=black)](https://www.buymeacoffee.com/ding.mail)
+[![Razorpay (UPI & more)](https://img.shields.io/badge/Razorpay-UPI%20%26%20more-02042B?style=for-the-badge&logo=razorpay&logoColor=white)](https://razorpay.me/@rohpod)
+
 ## License
 
 MIT — see [LICENSE](LICENSE).
 
 ## Acknowledgements
 
-Built with [swift-nio-imap](https://github.com/apple/swift-nio-imap) and [SwiftNIO](https://github.com/apple/swift-nio), both from Apple, licensed under Apache 2.0.
 Development of this application was supported by Antigravity.
