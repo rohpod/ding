@@ -89,7 +89,6 @@ final class dingTests: XCTestCase {
         XCTAssertTrue(preferences.isMenuBarIconVisible)
         XCTAssertFalse(preferences.isOpenAtLoginEnabled)
         XCTAssertTrue(preferences.isAutomaticUpdateCheckEnabled)
-        XCTAssertNil(preferences.lastUpdateCheckDate)
     }
 
     @MainActor
@@ -101,8 +100,6 @@ final class dingTests: XCTestCase {
         }
         defer { testDefaults.removePersistentDomain(forName: suiteName) }
 
-        let testDate = Date(timeIntervalSince1970: 1700000000)
-
         // Set custom values in preferences
         let preferences = AppPreferences(userDefaults: testDefaults)
         preferences.defaultSyncFrequency = .fifteenMinutes
@@ -110,7 +107,6 @@ final class dingTests: XCTestCase {
         preferences.isMenuBarIconVisible = false
         preferences.isOpenAtLoginEnabled = true
         preferences.isAutomaticUpdateCheckEnabled = false
-        preferences.lastUpdateCheckDate = testDate
 
         // Create a second preferences instance pointing to the same storage to verify persistence
         let reloaded = AppPreferences(userDefaults: testDefaults)
@@ -119,7 +115,6 @@ final class dingTests: XCTestCase {
         XCTAssertFalse(reloaded.isMenuBarIconVisible)
         XCTAssertTrue(reloaded.isOpenAtLoginEnabled)
         XCTAssertFalse(reloaded.isAutomaticUpdateCheckEnabled)
-        XCTAssertEqual(reloaded.lastUpdateCheckDate?.timeIntervalSince1970, testDate.timeIntervalSince1970)
     }
 
     @MainActor

@@ -5,11 +5,17 @@ import os
 public enum MenuBarIconLoader {
     private static let logger = Logger(subsystem: DingLog.subsystem, category: "MenuBarIcon")
 
+    /// Cached instance of the resolved menu bar icon, resolved once on first access.
+    private static let cachedIcon: NSImage = resolveMenuBarIcon()
+
     /// Loads the custom menu bar template icon asset, configuring it for dynamic macOS tinting.
     ///
-    /// Supports loading from the `.app` bundle (`Bundle.main`), the SwiftPM resource bundle (`Bundle.module`),
-    /// or via standard named lookup, with a graceful fallback to the SF Symbol "envelope".
+    /// The icon is resolved once on first access and cached for subsequent calls.
     public static func loadMenuBarIcon() -> NSImage {
+        cachedIcon
+    }
+
+    private static func resolveMenuBarIcon() -> NSImage {
         let resourceName = "MenuBarIconTemplate"
 
         // 1. Attempt loading directly from the app bundle's Contents/Resources directory

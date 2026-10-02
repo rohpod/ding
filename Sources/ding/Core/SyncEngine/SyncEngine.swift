@@ -63,6 +63,7 @@ public final class SyncEngine: ObservableObject {
     private var accountObservation: AnyCancellable?
     private var eventContinuations: [UUID: AsyncStream<NewMailEvent>.Continuation] = [:]
     private var registeredShortcutAccountIDs = Set<UUID>()
+    private var restartTasks: [UUID: Task<Void, Never>] = [:]
 
     /// Initializes a new sync engine coordinator.
     ///
@@ -133,6 +134,11 @@ public final class SyncEngine: ObservableObject {
             KeyboardShortcuts.disable(.checkMail(accountID: id))
         }
         registeredShortcutAccountIDs.removeAll()
+
+        for (_, task) in restartTasks {
+            task.cancel()
+        }
+        restartTasks.removeAll()
 
         for (id, worker) in workers {
             Task {
@@ -268,6 +274,7 @@ public final class SyncEngine: ObservableObject {
         // 1. Remove workers for deleted accounts
         let removedIDs = existingIDs.subtracting(currentIDs)
         for id in removedIDs {
+            restartTasks.removeValue(forKey: id)?.cancel()
             if let worker = workers.removeValue(forKey: id) {
                 Self.logger.info("Removing worker for deleted account: \(id.uuidString, privacy: .public)")
                 Task {
@@ -288,14 +295,24 @@ public final class SyncEngine: ObservableObject {
         for account in accounts {
             if let existingWorker = workers[account.id] {
                 // If frequency changed, restart worker with updated settings
-                Task {
-                    let workerAccount = existingWorker.account
-                    if workerAccount.syncFrequency != account.syncFrequency {
-                        Self.logger.info("Restarting worker for account with changed frequency: \(account.id.uuidString, privacy: .public)")
-                        await existingWorker.stop()
-                        let newWorker = self.createWorker(for: account)
-                        self.workers[account.id] = newWorker
-                        await newWorker.start()
+                if existingWorker.account.syncFrequency != account.syncFrequency {
+                    Self.logger.info("Scheduling restart for account with changed frequency: \(account.id.uuidString, privacy: .public)")
+                    let previousRestart = restartTasks[account.id]
+                    restartTasks[account.id] = Task { [weak self] in
+                        previousRestart?.cancel()
+                        _ = await previousRestart?.result
+                        guard let self = self, self.isRunning else { return }
+                        guard let currentWorker = self.workers[account.id] else { return }
+                        let latestAccount = self.accountManager.accounts.first(where: { $0.id == account.id }) ?? account
+                        if currentWorker.account.syncFrequency != latestAccount.syncFrequency {
+                            await currentWorker.stop()
+                            guard !Task.isCancelled, self.isRunning else { return }
+                            guard self.accountManager.accounts.contains(where: { $0.id == account.id }) else { return }
+                            let newWorker = self.createWorker(for: latestAccount)
+                            self.workers[account.id] = newWorker
+                            await newWorker.start()
+                        }
+                        self.restartTasks.removeValue(forKey: account.id)
                     }
                 }
             } else {

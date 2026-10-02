@@ -133,6 +133,45 @@ final class AccountManagerTests: XCTestCase {
     }
 
     @MainActor
+    func testRemoveAccountCleansUpSyncStateAndPasswordCacheWhenKeychainFails() throws {
+        struct MockKeychainError: Error, Equatable {}
+        final class FailingKeychainService: KeychainServiceProtocol, @unchecked Sendable {
+            func store(password: String, forAccountID id: UUID) throws {}
+            func retrievePassword(forAccountID id: UUID) throws -> String { "secret" }
+            func updatePassword(_ password: String, forAccountID id: UUID) throws {}
+            func deletePassword(forAccountID id: UUID) throws {
+                throw MockKeychainError()
+            }
+        }
+
+        let failingKeychain = FailingKeychainService()
+        let manager = AccountManager(accountStore: testStore, keychainService: failingKeychain, syncStateStore: testSyncStore)
+        let account = try manager.addAccount(email: "fail-keychain@example.com", provider: .gmail, appPassword: "secret")
+
+        // Seed sync state
+        let state = SyncState(accountID: account.id, uidValidity: 1, lastSeenUID: 10, lastSyncedAt: Date())
+        try testSyncStore.updateState(state)
+        XCTAssertNotNil(try testSyncStore.state(forAccountID: account.id))
+
+        // Populate password cache
+        _ = try manager.password(forAccountID: account.id)
+
+        // removeAccount should throw the keychain error
+        XCTAssertThrowsError(try manager.removeAccount(id: account.id)) { error in
+            XCTAssertTrue(error is MockKeychainError)
+        }
+
+        // Account is removed from memory
+        XCTAssertFalse(manager.accounts.contains(where: { $0.id == account.id }))
+        // Sync state was pruned
+        XCTAssertNil(try testSyncStore.state(forAccountID: account.id))
+        // Password cache was cleared, so password() now throws accountNotFound
+        XCTAssertThrowsError(try manager.password(forAccountID: account.id)) { error in
+            XCTAssertEqual(error as? AccountManagerError, .accountNotFound(account.id))
+        }
+    }
+
+    @MainActor
     func testRemoveNonExistentAccountThrows() {
         let manager = AccountManager(accountStore: testStore, keychainService: mockKeychain)
         let missingID = UUID()

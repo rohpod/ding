@@ -261,6 +261,7 @@ private struct AccountDetailView: View {
     @State private var newAppPassword: String = ""
     @State private var reauthErrorMessage: String?
     @State private var isUpdatingPassword: Bool = false
+    @State private var debounceSaveTask: Task<Void, Never>? = nil
     @FocusState private var isAliasFocused: Bool
 
     var body: some View {
@@ -290,16 +291,16 @@ private struct AccountDetailView: View {
                         .textFieldStyle(.roundedBorder)
                         .focused($isAliasFocused)
                         .onSubmit {
-                            saveAlias()
+                            flushAliasSave()
                             isAliasFocused = false
                             NSApp.keyWindow?.makeFirstResponder(nil)
                         }
                         .onChange(of: aliasText) { _ in
-                            saveAlias()
+                            scheduleDebouncedAliasSave()
                         }
                         .onChange(of: isAliasFocused) { focused in
                             if !focused {
-                                saveAlias()
+                                flushAliasSave()
                             }
                         }
                 }
@@ -348,13 +349,18 @@ private struct AccountDetailView: View {
             if isAliasFocused {
                 isAliasFocused = false
                 NSApp.keyWindow?.makeFirstResponder(nil)
+                flushAliasSave()
             }
         }
         .onExitCommand {
             if isAliasFocused {
                 isAliasFocused = false
                 NSApp.keyWindow?.makeFirstResponder(nil)
+                flushAliasSave()
             }
+        }
+        .onDisappear {
+            flushAliasSave()
         }
         .onAppear {
             aliasText = account.alias ?? ""
@@ -424,10 +430,26 @@ private struct AccountDetailView: View {
 
     // MARK: - Actions
 
+    private func scheduleDebouncedAliasSave() {
+        debounceSaveTask?.cancel()
+        debounceSaveTask = Task { @MainActor in
+            try? await Task.sleep(nanoseconds: 400_000_000)
+            guard !Task.isCancelled else { return }
+            saveAlias()
+        }
+    }
+
+    private func flushAliasSave() {
+        debounceSaveTask?.cancel()
+        debounceSaveTask = nil
+        saveAlias()
+    }
+
     private func saveAlias() {
+        let currentAccount = accountManager.accounts.first(where: { $0.id == account.id }) ?? account
         let finalAlias = Account.normalizeAlias(aliasText)
-        if account.alias != finalAlias {
-            var updated = account
+        if currentAccount.alias != finalAlias {
+            var updated = currentAccount
             updated.alias = finalAlias
             do {
                 try accountManager.updateAccount(updated)
