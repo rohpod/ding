@@ -554,6 +554,94 @@ final class AccountSyncWorkerTests: XCTestCase {
 
         await worker.stop()
     }
+
+    func testCheckUnreadCountWhenNotConnectedConnectsAndDisconnects() async throws {
+        let account = Account(email: "unread-disconnected@example.com", provider: .gmail)
+        let fakeClient = FakeIMAPClient()
+        await fakeClient.setUnreadCount(7)
+
+        let worker = AccountSyncWorker(
+            account: account,
+            imapClient: fakeClient,
+            syncStateStore: syncStore,
+            passwordProvider: { _ in "secret-pwd" }
+        )
+
+        let count = try await worker.checkUnreadCount()
+        XCTAssertEqual(count, 7)
+
+        let connectCalls = await fakeClient.connectCallCount
+        let loginCalls = await fakeClient.loginCallCount
+        let unreadCalls = await fakeClient.fetchUnreadCountCallCount
+        let disconnectCalls = await fakeClient.disconnectCallCount
+        let isConnected = await fakeClient.isConnected
+
+        XCTAssertEqual(connectCalls, 1)
+        XCTAssertEqual(loginCalls, 1)
+        XCTAssertEqual(unreadCalls, 1)
+        XCTAssertEqual(disconnectCalls, 1)
+        XCTAssertFalse(isConnected)
+    }
+
+    func testCheckUnreadCountWhenConnectedReusesConnection() async throws {
+        let account = Account(email: "unread-connected@example.com", provider: .gmail, syncFrequency: .always)
+        let fakeClient = FakeIMAPClient()
+        await fakeClient.setMailboxStatus(MailboxStatus(uidValidity: 1, uidNext: 100, messageCount: 10, recentCount: 0))
+        await fakeClient.setUnreadCount(3)
+
+        let worker = AccountSyncWorker(
+            account: account,
+            imapClient: fakeClient,
+            syncStateStore: syncStore,
+            defaultSyncFrequency: .always,
+            passwordProvider: { _ in "secret" },
+            sleepProvider: { _ in try await Task.sleep(nanoseconds: 60_000_000_000) }
+        )
+
+        await worker.start()
+
+        // Wait until worker is connected
+        for _ in 0..<50 {
+            let isConnected = await fakeClient.isConnected
+            if isConnected { break }
+            try await Task.sleep(nanoseconds: 10_000_000)
+        }
+
+        let initialDisconnects = await fakeClient.disconnectCallCount
+        let count = try await worker.checkUnreadCount()
+        XCTAssertEqual(count, 3)
+
+        let unreadCalls = await fakeClient.fetchUnreadCountCallCount
+        let finalDisconnects = await fakeClient.disconnectCallCount
+
+        XCTAssertEqual(unreadCalls, 1)
+        XCTAssertEqual(finalDisconnects, initialDisconnects, "Should not disconnect pre-existing connection")
+
+        await worker.stop()
+    }
+
+    func testCheckUnreadCountThrowsErrorAndDisconnectsWhenNotConnected() async throws {
+        let account = Account(email: "unread-err@example.com", provider: .gmail)
+        let fakeClient = FakeIMAPClient()
+        await fakeClient.setFetchUnreadCountError(.unexpectedResponse("STATUS error"))
+
+        let worker = AccountSyncWorker(
+            account: account,
+            imapClient: fakeClient,
+            syncStateStore: syncStore,
+            passwordProvider: { _ in "secret" }
+        )
+
+        do {
+            _ = try await worker.checkUnreadCount()
+            XCTFail("Expected checkUnreadCount to throw")
+        } catch let error as IMAPClientError {
+            XCTAssertEqual(error, .unexpectedResponse("STATUS error"))
+        }
+
+        let disconnectCalls = await fakeClient.disconnectCallCount
+        XCTAssertEqual(disconnectCalls, 1, "Must disconnect even on query error")
+    }
 }
 
 // MARK: - Thread-safe Test Box

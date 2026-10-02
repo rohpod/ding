@@ -427,4 +427,50 @@ final class IMAPClientTests: XCTestCase {
         let isConnectedAfterDisconnect = await client.isConnected
         XCTAssertFalse(isConnectedAfterDisconnect)
     }
+
+    func testFakeIMAPClientFetchUnreadCount() async throws {
+        let client = FakeIMAPClient()
+
+        // 1. Throws notConnected when disconnected
+        do {
+            _ = try await client.fetchUnreadCount()
+            XCTFail("Expected fetchUnreadCount to throw .notConnected")
+        } catch let error as IMAPClientError {
+            XCTAssertEqual(error, .notConnected)
+        }
+
+        try await client.connect(host: "imap.example.com", port: 993)
+
+        // 2. Default is 0
+        let initialCount = try await client.fetchUnreadCount()
+        XCTAssertEqual(initialCount, 0)
+        let callCount = await client.fetchUnreadCountCallCount
+        XCTAssertEqual(callCount, 2)
+
+        // 3. Configurable unread count
+        await client.setUnreadCount(42)
+        let customCount = try await client.fetchUnreadCount()
+        XCTAssertEqual(customCount, 42)
+
+        // 4. Configurable error
+        await client.setFetchUnreadCountError(.unexpectedResponse("STATUS failed"))
+        do {
+            _ = try await client.fetchUnreadCount()
+            XCTFail("Expected fetchUnreadCount to throw error")
+        } catch let error as IMAPClientError {
+            XCTAssertEqual(error, .unexpectedResponse("STATUS failed"))
+        }
+    }
+
+    func testNIOIMAPClientFetchUnreadCountPrecondition() async {
+        let client = NIOIMAPClient()
+        do {
+            _ = try await client.fetchUnreadCount()
+            XCTFail("Expected fetchUnreadCount prior to connect to throw .notConnected")
+        } catch let error as IMAPClientError {
+            XCTAssertEqual(error, .notConnected)
+        } catch {
+            XCTFail("Unexpected error: \(error)")
+        }
+    }
 }

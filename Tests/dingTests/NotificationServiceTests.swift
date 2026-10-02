@@ -122,6 +122,41 @@ final class NotificationServiceTests: XCTestCase {
         XCTAssertEqual(uids, ["1", "2", "3"])
     }
 
+    func testNotificationContentBuilderZeroUnread() {
+        let content = NotificationContentBuilder.buildZeroUnreadContent()
+        XCTAssertEqual(content.title, "You have 0 unread emails")
+        XCTAssertEqual(content.body, "")
+        XCTAssertEqual(content.sound, .default)
+    }
+
+    func testNotificationContentBuilderAccountUnreadSingle() {
+        let account = Account(email: "single@example.com", provider: .gmail, alias: "Work Mail")
+        let content = NotificationContentBuilder.buildAccountUnreadContent(account: account, unreadCount: 1)
+
+        XCTAssertEqual(content.title, "Work Mail")
+        XCTAssertEqual(content.body, "1 unread email")
+        XCTAssertEqual(content.sound, .default)
+        XCTAssertEqual(content.userInfo[NotificationUserInfoKey.accountID] as? String, account.id.uuidString)
+    }
+
+    func testNotificationContentBuilderAccountUnreadMultiple() {
+        let account = Account(email: "multi@example.com", provider: .fastmail, alias: "Fastmail")
+        let content = NotificationContentBuilder.buildAccountUnreadContent(account: account, unreadCount: 12)
+
+        XCTAssertEqual(content.title, "Fastmail")
+        XCTAssertEqual(content.body, "12 unread emails")
+        XCTAssertEqual(content.sound, .default)
+        XCTAssertEqual(content.userInfo[NotificationUserInfoKey.accountID] as? String, account.id.uuidString)
+    }
+
+    func testNotificationContentBuilderAccountUnreadFallsBackToEmailWhenAliasNil() {
+        let account = Account(email: "noalias@example.com", provider: .yahoo)
+        let content = NotificationContentBuilder.buildAccountUnreadContent(account: account, unreadCount: 5)
+
+        XCTAssertEqual(content.title, "noalias@example.com")
+        XCTAssertEqual(content.body, "5 unread emails")
+    }
+
     // MARK: - Notification Action Resolver Tests
 
     func testNotificationActionResolverWithUseDefault() {

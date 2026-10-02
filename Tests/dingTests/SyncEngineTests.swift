@@ -306,26 +306,36 @@ final class SyncEngineTests: XCTestCase {
         XCTAssertTrue(sleep1Called.get())
         XCTAssertTrue(sleep2Called.get())
 
-        let fetchCount1Before = await fakeClient1.fetchNewMessagesCallCount
-        let fetchCount2Before = await fakeClient2.fetchNewMessagesCallCount
+        let unreadCount1Before = await fakeClient1.fetchUnreadCountCallCount
+        let unreadCount2Before = await fakeClient2.fetchUnreadCountCallCount
 
-        // Add canned messages
-        let msg1 = MessageSummary(uid: 101, subject: "M1", from: "a@example.com", dateReceived: Date())
-        let msg2 = MessageSummary(uid: 102, subject: "M2", from: "b@example.com", dateReceived: Date())
-        await fakeClient1.setCannedMessages([msg1])
-        await fakeClient2.setCannedMessages([msg2])
+        var capturedNotifications: [ManualCheckNotification] = []
+        engine.onManualCheckNotification = { capturedNotifications.append($0) }
+
+        await fakeClient1.setUnreadCount(3)
+        await fakeClient2.setUnreadCount(5)
 
         // Call checkAllMail() - should check acc1 (included) but NOT acc2 (excluded)
         await engine.checkAllMail()
 
-        let fetchCount1After = await fakeClient1.fetchNewMessagesCallCount
-        let fetchCount2After = await fakeClient2.fetchNewMessagesCallCount
+        let unreadCount1After = await fakeClient1.fetchUnreadCountCallCount
+        let unreadCount2After = await fakeClient2.fetchUnreadCountCallCount
 
-        XCTAssertGreaterThan(fetchCount1After, fetchCount1Before, "Included account must be checked")
-        XCTAssertEqual(fetchCount2After, fetchCount2Before, "Excluded account must not be checked by checkAllMail")
+        XCTAssertGreaterThan(unreadCount1After, unreadCount1Before, "Included account must be checked")
+        XCTAssertEqual(unreadCount2After, unreadCount2Before, "Excluded account must not be checked by checkAllMail")
+
+        // Notification for acc1 should be emitted, but NOT for excluded acc2
+        XCTAssertEqual(capturedNotifications.count, 1)
+        XCTAssertEqual(capturedNotifications.first, .accountUnread(account: acc1, count: 3))
 
         // Call checkMail(accountID:) directly for acc2 - should check acc2 even if excluded from global check
+        capturedNotifications.removeAll()
         await engine.checkMail(accountID: acc2ID)
+
+        let unreadCount2Final = await fakeClient2.fetchUnreadCountCallCount
+        XCTAssertGreaterThan(unreadCount2Final, unreadCount2After, "Direct checkMail must check acc2 even if excluded from global check")
+        XCTAssertEqual(capturedNotifications.count, 1)
+        XCTAssertEqual(capturedNotifications.first, .accountUnread(account: acc2, count: 5))
 
         // Verify manualCheckAccounts list for menu bar reflects only included accounts
         XCTAssertEqual(engine.manualCheckAccounts.count, 1)
@@ -364,5 +374,209 @@ final class SyncEngineTests: XCTestCase {
 
         XCTAssertEqual(engine.manualCheckAccounts.count, 1)
         XCTAssertEqual(engine.manualCheckAccounts.first?.id, acc2.id)
+    }
+
+    @MainActor
+    func testCheckAllMailZeroUnreadAcrossAllAccounts() async throws {
+        let manager = AccountManager(accountStore: testStore, keychainService: mockKeychain)
+        let acc1 = try manager.addAccount(email: "acc1@gmail.com", provider: .gmail, appPassword: "pwd")
+        _ = try manager.addAccount(email: "acc2@fastmail.com", provider: .fastmail, appPassword: "pwd")
+
+        let fakeClient1 = FakeIMAPClient()
+        let fakeClient2 = FakeIMAPClient()
+        await fakeClient1.setUnreadCount(0)
+        await fakeClient2.setUnreadCount(0)
+
+        let syncStore = self.syncStore!
+        let acc1ID = acc1.id
+
+        let engine = SyncEngine(
+            accountManager: manager,
+            workerFactory: { account, onNewMail in
+                let client = account.id == acc1ID ? fakeClient1 : fakeClient2
+                return AccountSyncWorker(
+                    account: account,
+                    imapClient: client,
+                    syncStateStore: syncStore,
+                    passwordProvider: { _ in "pwd" },
+                    sleepProvider: { _ in try await Task.sleep(nanoseconds: 60_000_000_000) },
+                    onNewMail: onNewMail
+                )
+            }
+        )
+
+        var notifications: [ManualCheckNotification] = []
+        engine.onManualCheckNotification = { notifications.append($0) }
+
+        engine.start()
+
+        await engine.checkAllMail()
+
+        XCTAssertEqual(notifications, [.zeroUnread])
+        let client1Calls = await fakeClient1.fetchUnreadCountCallCount
+        let client2Calls = await fakeClient2.fetchUnreadCountCallCount
+        XCTAssertGreaterThanOrEqual(client1Calls, 1)
+        XCTAssertGreaterThanOrEqual(client2Calls, 1)
+
+        engine.stop()
+    }
+
+    @MainActor
+    func testCheckAllMailMixedUnreadAndZeroAccounts() async throws {
+        let manager = AccountManager(accountStore: testStore, keychainService: mockKeychain)
+        let acc1 = try manager.addAccount(email: "unread@gmail.com", provider: .gmail, appPassword: "pwd")
+        _ = try manager.addAccount(email: "zero@fastmail.com", provider: .fastmail, appPassword: "pwd")
+
+        let fakeClient1 = FakeIMAPClient()
+        let fakeClient2 = FakeIMAPClient()
+        await fakeClient1.setUnreadCount(4)
+        await fakeClient2.setUnreadCount(0)
+
+        let syncStore = self.syncStore!
+        let acc1ID = acc1.id
+
+        let engine = SyncEngine(
+            accountManager: manager,
+            workerFactory: { account, onNewMail in
+                let client = account.id == acc1ID ? fakeClient1 : fakeClient2
+                return AccountSyncWorker(
+                    account: account,
+                    imapClient: client,
+                    syncStateStore: syncStore,
+                    passwordProvider: { _ in "pwd" },
+                    sleepProvider: { _ in try await Task.sleep(nanoseconds: 60_000_000_000) },
+                    onNewMail: onNewMail
+                )
+            }
+        )
+
+        var notifications: [ManualCheckNotification] = []
+        engine.onManualCheckNotification = { notifications.append($0) }
+
+        engine.start()
+
+        await engine.checkAllMail()
+
+        // Exactly one notification for acc1 with unread mail; acc2 with 0 is skipped
+        XCTAssertEqual(notifications.count, 1)
+        XCTAssertEqual(notifications.first, .accountUnread(account: acc1, count: 4))
+
+        engine.stop()
+    }
+
+    @MainActor
+    func testCheckAllMailMultipleAccountsWithUnreadMail() async throws {
+        let manager = AccountManager(accountStore: testStore, keychainService: mockKeychain)
+        let acc1 = try manager.addAccount(email: "acc1@gmail.com", provider: .gmail, appPassword: "pwd")
+        let acc2 = try manager.addAccount(email: "acc2@fastmail.com", provider: .fastmail, appPassword: "pwd")
+
+        let fakeClient1 = FakeIMAPClient()
+        let fakeClient2 = FakeIMAPClient()
+        await fakeClient1.setUnreadCount(2)
+        await fakeClient2.setUnreadCount(5)
+
+        let syncStore = self.syncStore!
+        let acc1ID = acc1.id
+
+        let engine = SyncEngine(
+            accountManager: manager,
+            workerFactory: { account, onNewMail in
+                let client = account.id == acc1ID ? fakeClient1 : fakeClient2
+                return AccountSyncWorker(
+                    account: account,
+                    imapClient: client,
+                    syncStateStore: syncStore,
+                    passwordProvider: { _ in "pwd" },
+                    sleepProvider: { _ in try await Task.sleep(nanoseconds: 60_000_000_000) },
+                    onNewMail: onNewMail
+                )
+            }
+        )
+
+        var notifications: [ManualCheckNotification] = []
+        engine.onManualCheckNotification = { notifications.append($0) }
+
+        engine.start()
+
+        await engine.checkAllMail()
+
+        // One notification per account with unread mail
+        XCTAssertEqual(notifications.count, 2)
+        XCTAssertTrue(notifications.contains(.accountUnread(account: acc1, count: 2)))
+        XCTAssertTrue(notifications.contains(.accountUnread(account: acc2, count: 5)))
+
+        engine.stop()
+    }
+
+    @MainActor
+    func testCheckMailSingleAccountZeroUnread() async throws {
+        let manager = AccountManager(accountStore: testStore, keychainService: mockKeychain)
+        let acc1 = try manager.addAccount(email: "single-zero@gmail.com", provider: .gmail, appPassword: "pwd")
+
+        let fakeClient = FakeIMAPClient()
+        await fakeClient.setUnreadCount(0)
+
+        let syncStore = self.syncStore!
+
+        let engine = SyncEngine(
+            accountManager: manager,
+            workerFactory: { account, onNewMail in
+                AccountSyncWorker(
+                    account: account,
+                    imapClient: fakeClient,
+                    syncStateStore: syncStore,
+                    passwordProvider: { _ in "pwd" },
+                    sleepProvider: { _ in try await Task.sleep(nanoseconds: 60_000_000_000) },
+                    onNewMail: onNewMail
+                )
+            }
+        )
+
+        var notifications: [ManualCheckNotification] = []
+        engine.onManualCheckNotification = { notifications.append($0) }
+
+        engine.start()
+
+        await engine.checkMail(accountID: acc1.id)
+
+        XCTAssertEqual(notifications, [.zeroUnread])
+
+        engine.stop()
+    }
+
+    @MainActor
+    func testCheckMailSingleAccountWithUnreadMail() async throws {
+        let manager = AccountManager(accountStore: testStore, keychainService: mockKeychain)
+        let acc1 = try manager.addAccount(email: "single-unread@gmail.com", provider: .gmail, appPassword: "pwd")
+
+        let fakeClient = FakeIMAPClient()
+        await fakeClient.setUnreadCount(11)
+
+        let syncStore = self.syncStore!
+
+        let engine = SyncEngine(
+            accountManager: manager,
+            workerFactory: { account, onNewMail in
+                AccountSyncWorker(
+                    account: account,
+                    imapClient: fakeClient,
+                    syncStateStore: syncStore,
+                    passwordProvider: { _ in "pwd" },
+                    sleepProvider: { _ in try await Task.sleep(nanoseconds: 60_000_000_000) },
+                    onNewMail: onNewMail
+                )
+            }
+        )
+
+        var notifications: [ManualCheckNotification] = []
+        engine.onManualCheckNotification = { notifications.append($0) }
+
+        engine.start()
+
+        await engine.checkMail(accountID: acc1.id)
+
+        XCTAssertEqual(notifications, [.accountUnread(account: acc1, count: 11)])
+
+        engine.stop()
     }
 }

@@ -106,6 +106,32 @@ public struct NotificationContentBuilder {
 
         return content
     }
+
+    /// Constructs a `UNMutableNotificationContent` payload for a zero-unread-mail notification.
+    public static func buildZeroUnreadContent() -> UNMutableNotificationContent {
+        let content = UNMutableNotificationContent()
+        content.title = "You have 0 unread emails"
+        content.sound = .default
+        return content
+    }
+
+    /// Constructs a `UNMutableNotificationContent` payload for a per-account unread mail notification.
+    ///
+    /// - Parameters:
+    ///   - account: The target mail account model.
+    ///   - unreadCount: The number of unread emails.
+    /// - Returns: A populated `UNMutableNotificationContent` ready for scheduling.
+    public static func buildAccountUnreadContent(account: Account, unreadCount: Int) -> UNMutableNotificationContent {
+        let content = UNMutableNotificationContent()
+        content.title = account.displayName.replacingOccurrences(of: "\n", with: " ").trimmingCharacters(in: .whitespacesAndNewlines)
+        let emailWord = unreadCount == 1 ? "unread email" : "unread emails"
+        content.body = "\(unreadCount) \(emailWord)"
+        content.sound = .default
+        content.userInfo = [
+            NotificationUserInfoKey.accountID: account.id.uuidString
+        ]
+        return content
+    }
 }
 
 /// Service wrapping `UNUserNotificationCenter` for posting notifications and requesting permissions.
@@ -182,6 +208,48 @@ public final class NotificationService {
             Self.logger.info("Sent notification for \(event.messages.count, privacy: .public) new message(s) in \(account.displayName, privacy: .public)")
         } catch {
             Self.logger.error("Failed to deliver notification for account \(account.id.uuidString, privacy: .public): \(error.localizedDescription, privacy: .public)")
+        }
+    }
+
+    /// Builds and delivers a user notification indicating zero unread emails across checked accounts.
+    public func sendZeroUnreadNotification() async {
+        guard NotificationPermissionManager.isRunningInAppBundle else {
+            Self.logger.warning("Running outside an .app bundle; skipping zero-unread notification delivery.")
+            return
+        }
+
+        let content = NotificationContentBuilder.buildZeroUnreadContent()
+        let identifier = "ding.mail.zeroUnread.\(UUID().uuidString)"
+        let request = UNNotificationRequest(identifier: identifier, content: content, trigger: nil)
+
+        do {
+            try await UNUserNotificationCenter.current().add(request)
+            Self.logger.info("Sent zero-unread notification")
+        } catch {
+            Self.logger.error("Failed to deliver zero-unread notification: \(error.localizedDescription, privacy: .public)")
+        }
+    }
+
+    /// Builds and delivers a user notification for an account's unread mail count.
+    ///
+    /// - Parameters:
+    ///   - account: The target mail account model.
+    ///   - unreadCount: The number of unread emails.
+    public func sendAccountUnreadNotification(account: Account, unreadCount: Int) async {
+        guard NotificationPermissionManager.isRunningInAppBundle else {
+            Self.logger.warning("Running outside an .app bundle; skipping unread notification delivery for account \(account.id.uuidString, privacy: .public)")
+            return
+        }
+
+        let content = NotificationContentBuilder.buildAccountUnreadContent(account: account, unreadCount: unreadCount)
+        let identifier = "ding.mail.unread.\(account.id.uuidString).\(UUID().uuidString)"
+        let request = UNNotificationRequest(identifier: identifier, content: content, trigger: nil)
+
+        do {
+            try await UNUserNotificationCenter.current().add(request)
+            Self.logger.info("Sent unread notification for \(unreadCount, privacy: .public) unread email(s) in \(account.displayName, privacy: .public)")
+        } catch {
+            Self.logger.error("Failed to deliver unread notification for account \(account.id.uuidString, privacy: .public): \(error.localizedDescription, privacy: .public)")
         }
     }
 }
