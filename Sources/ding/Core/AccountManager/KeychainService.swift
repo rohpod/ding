@@ -95,13 +95,19 @@ public final class KeychainService: KeychainServiceProtocol, Sendable {
     /// Shared singleton instance of `KeychainService`.
     public static let shared = KeychainService()
 
+    /// The default Keychain service attribute name identifying ding IMAP credentials.
+    public static var defaultServiceName: String {
+        let isDev = Bundle.main.infoDictionary?["DingIsDevBuild"] as? Bool ?? false
+        return isDev ? "com.ding.mac.v3.imap-app-password.dev" : "com.ding.mac.v3.imap-app-password"
+    }
+
     /// The Keychain service attribute name identifying ding IMAP credentials.
     public let serviceName: String
 
     /// Initializes a Keychain service instance.
     ///
-    /// - Parameter serviceName: The service identifier. Defaults to `"com.ding.mac.v2.imap-app-password"`.
-    public init(serviceName: String = "com.ding.mac.v2.imap-app-password") {
+    /// - Parameter serviceName: The service identifier. Defaults to `KeychainService.defaultServiceName`.
+    public init(serviceName: String = KeychainService.defaultServiceName) {
         self.serviceName = serviceName
     }
 

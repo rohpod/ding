@@ -32,7 +32,8 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
             defer: false
         )
 
-        window.title = "ding Settings"
+        let isDev = Bundle.main.infoDictionary?["DingIsDevBuild"] as? Bool ?? false
+        window.title = isDev ? "ding (dev) Settings" : "ding Settings"
         window.center()
         window.isReleasedWhenClosed = false
         window.contentView = NSHostingView(rootView: SettingsView())

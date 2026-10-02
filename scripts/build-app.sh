@@ -43,6 +43,7 @@ echo "• Building ding version: $APP_VERSION"
 # troubleshooting with LLDB or diagnosing runtime crashes.
 BUILD_CONFIG="release"
 NO_RUN=false
+DEV_BUILD="${DING_DEV_BUILD:-0}"
 
 for arg in "$@"; do
     case "$arg" in
@@ -62,6 +63,21 @@ for arg in "$@"; do
             ;;
     esac
 done
+
+if [ "$DEV_BUILD" = "1" ]; then
+    BUNDLE_ID="com.ding.mac.v3.dev"
+    APP_DISPLAY_NAME="ding (dev)"
+    DEV_PLIST_ENTRY="    <!-- Development Build Flag -->
+    <key>DingIsDevBuild</key>
+    <true/>"
+    echo "• Development build mode enabled (bundle ID: $BUNDLE_ID)"
+else
+    BUNDLE_ID="com.ding.mac.v3"
+    APP_DISPLAY_NAME="ding"
+    DEV_PLIST_ENTRY="    <!-- Development Build Flag -->
+    <key>DingIsDevBuild</key>
+    <false/>"
+fi
 
 # 3. Ensure DEVELOPER_DIR points to Xcode if available
 # This prevents SDK/compiler version mismatches if the system default
@@ -121,20 +137,26 @@ if [ -f "$ROOT_DIR/Sources/ding/Resources/MenuBarIconTemplate.png" ]; then
     cp "$ROOT_DIR/Sources/ding/Resources/MenuBarIconTemplate.png" "$APP_DIR/Contents/Resources/MenuBarIconTemplate.png"
 fi
 
-# 9. Copy SwiftPM resource bundle into the .app
-# The SwiftPM-generated Bundle.module accessor looks for ding_ding.bundle at
-# Bundle.main.bundleURL/ding_ding.bundle (the .app root), but placing files there
-# breaks macOS code signing ("unsealed contents present in the bundle root").
-# Instead, we copy it into Contents/Resources/ where code signing expects it.
-# The app's loadMenuBarIcon() resolves the icon via Bundle.main first (which finds
-# loose files in Contents/Resources/), so the resource bundle here is a safety net
-# for any future Bundle.module usage or manual resource bundle lookups.
-RESOURCE_BUNDLE="$BIN_DIR/ding_ding.bundle"
-if [ -d "$RESOURCE_BUNDLE" ]; then
-    echo "• Bundling ding_ding.bundle into Resources..."
-    cp -R "$RESOURCE_BUNDLE" "$APP_DIR/Contents/Resources/ding_ding.bundle"
-else
-    echo "Warning: SwiftPM resource bundle not found at $RESOURCE_BUNDLE" >&2
+# 9. Copy SwiftPM resource bundles into the .app
+# SwiftPM-generated Bundle.module accessors search Bundle.main.resourceURL
+# (Contents/Resources/) for compiled resource bundles (e.g. ding_ding.bundle,
+# KeyboardShortcuts_KeyboardShortcuts.bundle). Placing them in Contents/Resources/
+# satisfies both Bundle.module lookup and macOS code signing requirements
+# (avoiding "unsealed contents present in the bundle root").
+echo "• Bundling SwiftPM resource bundles into Resources..."
+shopt -s nullglob
+BUNDLE_FOUND=false
+for bundle in "$BIN_DIR"/*.bundle; do
+    if [ -d "$bundle" ]; then
+        BUNDLE_FOUND=true
+        bundle_name="$(basename "$bundle")"
+        echo "  - $bundle_name"
+        cp -R "$bundle" "$APP_DIR/Contents/Resources/$bundle_name"
+    fi
+done
+shopt -u nullglob
+if [ "$BUNDLE_FOUND" = false ]; then
+    echo "Warning: no SwiftPM resource bundles found in $BIN_DIR" >&2
 fi
 
 cat << EOF > "$APP_DIR/Contents/Info.plist"
@@ -148,9 +170,9 @@ cat << EOF > "$APP_DIR/Contents/Info.plist"
     <key>CFBundleName</key>
     <string>ding</string>
     <key>CFBundleDisplayName</key>
-    <string>ding</string>
+    <string>${APP_DISPLAY_NAME}</string>
     <key>CFBundleIdentifier</key>
-    <string>com.ding.mac.v2</string>
+    <string>${BUNDLE_ID}</string>
     <key>CFBundleExecutable</key>
     <string>ding</string>
     <key>CFBundleIconFile</key>
@@ -159,6 +181,7 @@ cat << EOF > "$APP_DIR/Contents/Info.plist"
     <string>${APP_VERSION}</string>
     <key>CFBundleVersion</key>
     <string>${APP_VERSION}</string>
+${DEV_PLIST_ENTRY}
 
     <!-- Minimum System Version (macOS 13+ Ventura) -->
     <key>LSMinimumSystemVersion</key>

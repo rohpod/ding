@@ -828,7 +828,7 @@ private final class IMAPResponseHandler: ChannelInboundHandler, @unchecked Senda
         case .fatal(let responseText):
             let error = IMAPClientError.connectionFailed(
                 underlying: NSError(
-                    domain: "com.ding.mac.v2.imap",
+                    domain: "com.ding.mac.v3.imap",
                     code: -1,
                     userInfo: [NSLocalizedDescriptionKey: "Server closed connection: \(responseText.text)"]
                 )

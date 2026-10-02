@@ -34,6 +34,11 @@ public final class LoginItemManager {
 
     private let appService: SMAppService
 
+    /// Indicates whether the application is running as a development build.
+    private static var isDevBuild: Bool {
+        Bundle.main.infoDictionary?["DingIsDevBuild"] as? Bool ?? false
+    }
+
     /// Indicates whether the current process is executing within a valid `.app` application bundle.
     public static var isRunningInAppBundle: Bool {
         Bundle.main.bundleURL.pathExtension == "app"
@@ -56,6 +61,9 @@ public final class LoginItemManager {
 
     /// Current status of the login item service in macOS.
     public var status: SMAppService.Status {
+        guard !Self.isDevBuild else {
+            return .notRegistered
+        }
         guard Self.isRunningInAppBundle else {
             return .notRegistered
         }
@@ -66,6 +74,11 @@ public final class LoginItemManager {
     ///
     /// - Throws: `LoginItemError.requiresAppBundle` if run outside an app bundle, or system errors if registration fails.
     public func enableLoginItem() throws {
+        guard !Self.isDevBuild else {
+            Self.logger.info("Skipping login item registration in development build mode.")
+            return
+        }
+
         guard Self.isRunningInAppBundle else {
             Self.logger.error("Failed to register login item: process is not running within an .app bundle.")
             throw LoginItemError.requiresAppBundle
