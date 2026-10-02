@@ -13,6 +13,10 @@ struct DingApp: App {
     @ObservedObject private var preferences = AppPreferences.shared
     @State private var isMenuBarIconVisible: Bool = AppPreferences.shared.isMenuBarIconVisible
 
+    private var isDevBuild: Bool {
+        Bundle.main.infoDictionary?["DingIsDevBuild"] as? Bool ?? false
+    }
+
     init() {
         if CommandLine.arguments.contains("--reset-login-item") {
             try? LoginItemManager.shared.disableLoginItem()
@@ -24,7 +28,15 @@ struct DingApp: App {
         MenuBarExtra(isInserted: $isMenuBarIconVisible) {
             MenuBarContentView()
         } label: {
-            Image(nsImage: MenuBarIconLoader.loadMenuBarIcon())
+            if isDevBuild {
+                HStack(spacing: 4) {
+                    Image(nsImage: MenuBarIconLoader.loadMenuBarIcon())
+                    Text("dev")
+                        .font(.caption2)
+                }
+            } else {
+                Image(nsImage: MenuBarIconLoader.loadMenuBarIcon())
+            }
         }
         .menuBarExtraStyle(.menu)
         .onChange(of: isMenuBarIconVisible) { newValue in

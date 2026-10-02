@@ -12,7 +12,7 @@ Packages the compiled SwiftPM executable into a native macOS application bundle 
 ### When to Use
 Use this script whenever you need to test functionality that requires a genuine macOS `.app` bundle identity:
 * **SMAppService (Open at Login)**: macOS 13+ requires a code-signed application bundle to register items in **System Settings > General > Login Items**.
-* **UNUserNotificationCenter (Notifications)**: Notification permissions, banner presentations, sound alerts, and click responses require a recognized bundle identifier (`com.ding.mac.v2`) and code signing.
+* **UNUserNotificationCenter (Notifications)**: Notification permissions, banner presentations, sound alerts, and click responses require a recognized bundle identifier (`com.ding.mac.v3`) and code signing.
 * **Keychain "Always Allow" Persistence**: Ad-hoc code signing (`codesign -s -`) provides a stable cryptographic `cdhash` and designated requirement so that macOS Keychain remembers authorization across repeated launches of the same built application.
 * **Spotlight / Applications Relaunching**: Verifies `applicationShouldHandleReopen` behavior when launching the `.app` bundle while already running.
 
@@ -29,6 +29,23 @@ From anywhere in the repository:
 # Or build a debug bundle with unoptimized symbols for troubleshooting with LLDB:
 ./scripts/build-app.sh debug
 ```
+
+### Development Build Mode (`DING_DEV_BUILD=1`)
+
+To prevent a locally built development copy from colliding with a real installed copy on the same Mac, set `DING_DEV_BUILD=1` when building:
+
+```bash
+# Build an isolated development bundle:
+DING_DEV_BUILD=1 ./scripts/build-app.sh
+```
+
+When built with `DING_DEV_BUILD=1`, the bundle is configured with:
+* **Bundle Identifier**: `com.ding.mac.v3.dev` (isolating `UserDefaults` domain)
+* **Display Name**: `ding (dev)`
+* **Keychain Service**: `com.ding.mac.v3.imap-app-password.dev` (isolating stored credentials)
+* **Application Support Directory**: `~/Library/Application Support/Ding-Dev/` (isolating `accounts.json` and `sync_state.json`)
+* **Login Items**: Skips `SMAppService.mainApp` registration entirely (status always reports `.notRegistered`, and the Startup section is hidden in Settings)
+* **Visual Distinctions**: Displays a `"dev"` label next to the menu bar icon and titles the settings window `"ding (dev) Settings"`
 
 ### Launching the Application
 
@@ -58,8 +75,8 @@ Resets local testing state to simulate a completely fresh "first launch" environ
 ### What it Does
 1. Terminates any running `ding` process (`pkill -x ding`).
 2. Unregisters any registered macOS Login Item (`--reset-login-item` via `.build/ding.app`).
-3. Resets macOS notification and TCC privacy permissions (`tccutil reset All com.ding.mac.v2`).
-4. Clears saved user preferences from macOS `UserDefaults` (`defaults delete com.ding.mac.v2`).
+3. Resets macOS notification and TCC privacy permissions (`tccutil reset All com.ding.mac.v3`).
+4. Clears saved user preferences from macOS `UserDefaults` (`defaults delete com.ding.mac.v3`).
 
 ### How to Run
 

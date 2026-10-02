@@ -13,7 +13,7 @@ let package = Package(
         .package(url: "https://github.com/apple/swift-nio-imap.git", from: "0.4.0"),
         .package(url: "https://github.com/apple/swift-nio-ssl.git", from: "2.25.0"),
         .package(url: "https://github.com/sparkle-project/Sparkle", from: "2.6.0"),
-        .package(url: "https://github.com/sindresorhus/KeyboardShortcuts", from: "2.0.0")
+        .package(url: "https://github.com/sindresorhus/KeyboardShortcuts", from: "3.1.0")
     ],
     targets: [
         .executableTarget(

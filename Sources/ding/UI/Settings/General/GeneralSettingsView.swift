@@ -15,6 +15,10 @@ struct GeneralSettingsView: View {
     @State private var notificationErrorMessage: String?
     @State private var loginItemErrorMessage: String?
 
+    private var isDevBuild: Bool {
+        Bundle.main.infoDictionary?["DingIsDevBuild"] as? Bool ?? false
+    }
+
     var body: some View {
         Form {
             // MARK: - Sync Section
@@ -79,18 +83,20 @@ struct GeneralSettingsView: View {
             }
 
             // MARK: - Startup Section
-            Section("Startup") {
-                Toggle("Open ding at login", isOn: Binding(
-                    get: { preferences.isOpenAtLoginEnabled },
-                    set: { newValue in
-                        handleLoginItemToggle(enable: newValue)
-                    }
-                ))
+            if !isDevBuild {
+                Section("Startup") {
+                    Toggle("Open ding at login", isOn: Binding(
+                        get: { preferences.isOpenAtLoginEnabled },
+                        set: { newValue in
+                            handleLoginItemToggle(enable: newValue)
+                        }
+                    ))
 
-                if let errorMessage = loginItemErrorMessage {
-                    Text(errorMessage)
-                        .font(.caption)
-                        .foregroundColor(.red)
+                    if let errorMessage = loginItemErrorMessage {
+                        Text(errorMessage)
+                            .font(.caption)
+                            .foregroundColor(.red)
+                    }
                 }
             }
         }

@@ -63,9 +63,11 @@ public final class AccountStore: AccountStoreProtocol, Sendable {
 
     /// Default URL pointing to `~/Library/Application Support/Ding/accounts.json`.
     public static var defaultFileURL: URL {
+        let isDev = Bundle.main.infoDictionary?["DingIsDevBuild"] as? Bool ?? false
+        let folderName = isDev ? "Ding-Dev" : "Ding"
         let appSupport = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first
             ?? URL(fileURLWithPath: ("~/Library/Application Support" as NSString).expandingTildeInPath)
-        return appSupport.appendingPathComponent("Ding", isDirectory: true).appendingPathComponent("accounts.json")
+        return appSupport.appendingPathComponent(folderName, isDirectory: true).appendingPathComponent("accounts.json")
     }
 
     /// Initializes an account disk store.
