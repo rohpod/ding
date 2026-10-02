@@ -1,3 +1,4 @@
+import KeyboardShortcuts
 import SwiftUI
 import UserNotifications
 
@@ -23,6 +24,11 @@ struct GeneralSettingsView: View {
                         Text(frequency.displayName).tag(frequency)
                     }
                 }
+            }
+
+            // MARK: - Shortcuts Section
+            Section("Shortcuts") {
+                KeyboardShortcuts.Recorder("Check All Mail", name: .checkAllMail)
             }
 
             // MARK: - Notifications Section

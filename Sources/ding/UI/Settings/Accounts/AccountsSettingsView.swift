@@ -1,4 +1,5 @@
 import AppKit
+import KeyboardShortcuts
 import os
 import SwiftUI
 
@@ -334,6 +335,11 @@ private struct AccountDetailView: View {
                         updateAccountIncludeInManualCheck(newValue)
                     }
                 ))
+            }
+
+            // MARK: - Shortcuts Section
+            Section("Shortcuts") {
+                KeyboardShortcuts.Recorder("Check Mail Shortcut", name: .checkMail(accountID: account.id))
             }
         }
         .formStyle(.grouped)
