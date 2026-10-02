@@ -61,9 +61,20 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             await notificationService.requestPermissionIfNeeded()
         }
 
-        // Per spec: BOTH first launch and subsequent launches should open the Settings window automatically.
-        // This ensures the user has immediate access to configuration even if the menu bar icon is hidden.
-        openSettings()
+        // Manual launches open the Settings window automatically to ensure the user has immediate
+        // access to configuration even if the menu bar icon is hidden. Automatic login-item launches
+        // start silently as a menu bar agent only.
+        let wasLaunchedAsLoginItem: Bool = {
+            guard let event = NSAppleEventManager.shared().currentAppleEvent else { return false }
+            let launchedAsLogInItemDescriptor = event.attributeDescriptor(forKeyword: keyAELaunchedAsLogInItem)
+            return launchedAsLogInItemDescriptor?.booleanValue ?? false
+        }()
+
+        if wasLaunchedAsLoginItem {
+            Self.logger.info("Launched as login item; skipping automatic Settings presentation.")
+        } else {
+            openSettings()
+        }
     }
 
     /// Handles application reopen events (e.g. launching ding from Applications or Spotlight while already running).
