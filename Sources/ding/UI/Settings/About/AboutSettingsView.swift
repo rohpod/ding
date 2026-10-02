@@ -22,7 +22,7 @@ struct AboutSettingsView: View {
     }()
 
     private var appVersion: String {
-        Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "0.3.0"
+        Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "0.4.0"
     }
 
     var body: some View {
