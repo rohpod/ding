@@ -1,5 +1,6 @@
 import Combine
 import Foundation
+import KeyboardShortcuts
 import os
 
 /// The top-level coordinator managing per-account synchronization workers.
@@ -61,6 +62,7 @@ public final class SyncEngine: ObservableObject {
     private var cancellables = Set<AnyCancellable>()
     private var accountObservation: AnyCancellable?
     private var eventContinuations: [UUID: AsyncStream<NewMailEvent>.Continuation] = [:]
+    private var registeredShortcutAccountIDs = Set<UUID>()
 
     /// Initializes a new sync engine coordinator.
     ///
@@ -99,7 +101,14 @@ public final class SyncEngine: ObservableObject {
         isRunning = true
         Self.logger.info("Starting SyncEngine with \(self.accountManager.accounts.count, privacy: .public) account(s)")
 
-        // Synchronize initial workers
+        // Register global shortcut listener
+        KeyboardShortcuts.onKeyUp(for: .checkAllMail) { [weak self] in
+            Task { @MainActor [weak self] in
+                await self?.checkAllMail()
+            }
+        }
+
+        // Synchronize initial workers and account shortcuts
         syncWorkers(with: accountManager.accounts)
 
         // Observe account changes dynamically
@@ -118,6 +127,12 @@ public final class SyncEngine: ObservableObject {
         Self.logger.info("Stopping SyncEngine and all child workers")
 
         cancellables.removeAll()
+
+        KeyboardShortcuts.disable(.checkAllMail)
+        for id in registeredShortcutAccountIDs {
+            KeyboardShortcuts.disable(.checkMail(accountID: id))
+        }
+        registeredShortcutAccountIDs.removeAll()
 
         for (id, worker) in workers {
             Task {
@@ -261,6 +276,14 @@ public final class SyncEngine: ObservableObject {
             }
         }
 
+        let removedShortcutIDs = registeredShortcutAccountIDs.subtracting(currentIDs)
+        for id in removedShortcutIDs {
+            KeyboardShortcuts.disable(.checkMail(accountID: id))
+            KeyboardShortcuts.reset(.checkMail(accountID: id))
+            registeredShortcutAccountIDs.remove(id)
+            Self.logger.info("Removed shortcut listener and reset shortcut for deleted account: \(id.uuidString, privacy: .public)")
+        }
+
         // 2. Add or update workers
         for account in accounts {
             if let existingWorker = workers[account.id] {
@@ -282,6 +305,18 @@ public final class SyncEngine: ObservableObject {
                 Task {
                     await worker.start()
                 }
+            }
+
+            // Register per-account shortcut listener if not yet registered
+            if !registeredShortcutAccountIDs.contains(account.id) {
+                let accountID = account.id
+                KeyboardShortcuts.onKeyUp(for: .checkMail(accountID: accountID)) { [weak self] in
+                    Task { @MainActor [weak self] in
+                        await self?.checkMail(accountID: accountID)
+                    }
+                }
+                registeredShortcutAccountIDs.insert(accountID)
+                Self.logger.info("Registered shortcut listener for account: \(accountID.uuidString, privacy: .public)")
             }
         }
     }
