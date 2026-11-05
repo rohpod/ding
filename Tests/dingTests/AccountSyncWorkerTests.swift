@@ -28,6 +28,7 @@ final class AccountSyncWorkerTests: XCTestCase {
         let worker = AccountSyncWorker(
             account: account,
             imapClient: fakeClient,
+            manualCheckClientFactory: { fakeClient },
             syncStateStore: syncStore,
             defaultSyncFrequency: .fiveMinutes,
             passwordProvider: { _ in "secret-password" },
@@ -83,6 +84,7 @@ final class AccountSyncWorkerTests: XCTestCase {
         let worker = AccountSyncWorker(
             account: account,
             imapClient: fakeClient,
+            manualCheckClientFactory: { fakeClient },
             syncStateStore: syncStore,
             defaultSyncFrequency: .fifteenMinutes,
             passwordProvider: { _ in "secret-password" },
@@ -137,6 +139,7 @@ final class AccountSyncWorkerTests: XCTestCase {
         let worker = AccountSyncWorker(
             account: account,
             imapClient: fakeClient,
+            manualCheckClientFactory: { fakeClient },
             syncStateStore: syncStore,
             defaultSyncFrequency: .hourly,
             passwordProvider: { _ in "secret-password" },
@@ -179,6 +182,7 @@ final class AccountSyncWorkerTests: XCTestCase {
         let worker = AccountSyncWorker(
             account: account,
             imapClient: fakeClient,
+            manualCheckClientFactory: { fakeClient },
             syncStateStore: syncStore,
             defaultSyncFrequency: .fiveMinutes,
             passwordProvider: { _ in "wrong-password" },
@@ -213,6 +217,7 @@ final class AccountSyncWorkerTests: XCTestCase {
         let worker = AccountSyncWorker(
             account: account,
             imapClient: fakeClient,
+            manualCheckClientFactory: { fakeClient },
             syncStateStore: syncStore,
             defaultSyncFrequency: .always,
             passwordProvider: { _ in "password" },
@@ -247,13 +252,15 @@ final class AccountSyncWorkerTests: XCTestCase {
         let worker = AccountSyncWorker(
             account: account,
             imapClient: fakeClient,
+            manualCheckClientFactory: { fakeClient },
             syncStateStore: syncStore,
             defaultSyncFrequency: .fiveMinutes,
             passwordProvider: { _ in "password" },
             sleepProvider: { duration in
                 sleepDurations.withLock { $0.append(duration) }
                 try await Task.sleep(nanoseconds: 10_000_000)
-            }
+            },
+            backoffJitter: { 0 }
         )
 
         await worker.start()
@@ -273,6 +280,341 @@ final class AccountSyncWorkerTests: XCTestCase {
         XCTAssertEqual(durations[2].components.seconds, 20)
     }
 
+    func testBackoffGrowsWhenFailureHappensAfterSelect() async throws {
+        let account = Account(email: "test@example.com", provider: .gmail)
+        let fakeClient = FakeIMAPClient()
+        await fakeClient.setMailboxStatus(MailboxStatus(uidValidity: 1, uidNext: 10, messageCount: 5, recentCount: 0))
+        await fakeClient.setFetchMessagesError(.timeout)
+
+        let sleepDurations = LockProtected<[Duration]>([])
+        let worker = AccountSyncWorker(
+            account: account,
+            imapClient: fakeClient,
+            manualCheckClientFactory: { fakeClient },
+            syncStateStore: syncStore,
+            defaultSyncFrequency: .fiveMinutes,
+            passwordProvider: { _ in "password" },
+            sleepProvider: { duration in
+                sleepDurations.withLock { $0.append(duration) }
+                try await Task.sleep(nanoseconds: 10_000_000)
+            },
+            backoffJitter: { 0 }
+        )
+
+        await worker.start()
+        for _ in 0..<100 {
+            if sleepDurations.get().count >= 3 { break }
+            try await Task.sleep(nanoseconds: 10_000_000)
+        }
+        await worker.stop()
+
+        let seconds = sleepDurations.get().prefix(3).map { $0.components.seconds }
+        XCTAssertEqual(Array(seconds), [5, 10, 20], "Failures after SELECT must keep escalating the backoff")
+    }
+
+    func testBackoffJitterIsAddedToDelay() async throws {
+        let account = Account(email: "test@example.com", provider: .gmail)
+        let fakeClient = FakeIMAPClient(connectError: .timeout)
+        let sleepDurations = LockProtected<[Duration]>([])
+        let worker = AccountSyncWorker(
+            account: account,
+            imapClient: fakeClient,
+            manualCheckClientFactory: { fakeClient },
+            syncStateStore: syncStore,
+            passwordProvider: { _ in "password" },
+            sleepProvider: { duration in
+                sleepDurations.withLock { $0.append(duration) }
+                try await Task.sleep(nanoseconds: 10_000_000)
+            },
+            backoffJitter: { 0.2 }
+        )
+        await worker.start()
+        for _ in 0..<100 {
+            if !sleepDurations.get().isEmpty { break }
+            try await Task.sleep(nanoseconds: 10_000_000)
+        }
+        await worker.stop()
+        XCTAssertEqual(sleepDurations.get().first?.components.seconds, 6)
+    }
+
+    func testIdleModeFetchesWaitingMailBeforeEnteringIdle() async throws {
+        let account = Account(email: "idle-catchup@example.com", provider: .gmail, syncFrequency: .always)
+        try syncStore.save([SyncState(accountID: account.id, uidValidity: 1, lastSeenUID: 100, lastSyncedAt: Date())])
+
+        let fakeClient = FakeIMAPClient()
+        await fakeClient.setMailboxStatus(MailboxStatus(uidValidity: 1, uidNext: 102, messageCount: 5, recentCount: 0))
+        await fakeClient.setCannedMessages([MessageSummary(uid: 101, subject: "Overnight", from: "a@example.com", dateReceived: Date())])
+
+        let events = LockProtected<[NewMailEvent]>([])
+        let worker = AccountSyncWorker(
+            account: account,
+            imapClient: fakeClient,
+            manualCheckClientFactory: { fakeClient },
+            syncStateStore: syncStore,
+            defaultSyncFrequency: .always,
+            passwordProvider: { _ in "password" },
+            sleepProvider: { _ in try await Task.sleep(nanoseconds: 60_000_000_000) },
+            onNewMail: { event in events.withLock { $0.append(event) } }
+        )
+
+        await worker.start()
+        for _ in 0..<100 {
+            if await fakeClient.startIdleCallCount > 0 { break }
+            try await Task.sleep(nanoseconds: 10_000_000)
+        }
+        await worker.stop()
+
+        XCTAssertEqual(events.get().count, 1, "Mail that arrived while disconnected must be delivered on connect, not on the next push")
+        XCTAssertEqual(events.get().first?.messages.map(\.uid), [101])
+        let fetchCalls = await fakeClient.fetchNewMessagesCallCount
+        XCTAssertGreaterThanOrEqual(fetchCalls, 1)
+    }
+
+    func testNewMailIsStillEmittedWhenPersistingStateFails() async throws {
+        struct FailingSyncStore: SyncStateStoreProtocol {
+            let seed: SyncState
+            func load() throws -> [SyncState] { [seed] }
+            func save(_ states: [SyncState]) throws { throw SyncStateStoreError.writeFailed(NSError(domain: "disk", code: 28)) }
+            func state(forAccountID id: UUID) throws -> SyncState? { seed }
+            func updateState(_ state: SyncState) throws { throw SyncStateStoreError.writeFailed(NSError(domain: "disk", code: 28)) }
+            func removeState(forAccountID id: UUID) throws {}
+        }
+
+        let account = Account(email: "disk-full@example.com", provider: .gmail)
+        let store = FailingSyncStore(seed: SyncState(accountID: account.id, uidValidity: 1, lastSeenUID: 10))
+        let fakeClient = FakeIMAPClient()
+        await fakeClient.setMailboxStatus(MailboxStatus(uidValidity: 1, uidNext: 12, messageCount: 3, recentCount: 0))
+        await fakeClient.setCannedMessages([MessageSummary(uid: 11, subject: "Hi", from: "a@example.com", dateReceived: Date())])
+
+        let events = LockProtected<[NewMailEvent]>([])
+        let slept = LockProtected<Bool>(false)
+        let worker = AccountSyncWorker(
+            account: account,
+            imapClient: fakeClient,
+            manualCheckClientFactory: { fakeClient },
+            syncStateStore: store,
+            defaultSyncFrequency: .fiveMinutes,
+            passwordProvider: { _ in "pw" },
+            sleepProvider: { _ in
+                slept.set(true)
+                try await Task.sleep(nanoseconds: 10_000_000)
+            },
+            onNewMail: { event in events.withLock { $0.append(event) } }
+        )
+
+        await worker.start()
+        for _ in 0..<100 {
+            if slept.get() { break }
+            try await Task.sleep(nanoseconds: 10_000_000)
+        }
+        await worker.stop()
+
+        XCTAssertEqual(events.get().count, 1, "A failed state write must not swallow the notification")
+    }
+
+    func testMissingKeychainItemStopsWorkerAndFlagsReauthentication() async throws {
+        let account = Account(email: "missing-secret@example.com", provider: .gmail)
+        let fakeClient = FakeIMAPClient()
+        let flagged = LockProtected<Bool>(false)
+
+        let worker = AccountSyncWorker(
+            account: account,
+            imapClient: fakeClient,
+            manualCheckClientFactory: { fakeClient },
+            syncStateStore: syncStore,
+            passwordProvider: { _ in throw KeychainError.itemNotFound },
+            reauthenticationHandler: { _ in flagged.set(true) },
+            sleepProvider: { _ in try await Task.sleep(nanoseconds: 10_000_000) }
+        )
+
+        await worker.start()
+        for _ in 0..<100 {
+            if flagged.get() { break }
+            try await Task.sleep(nanoseconds: 10_000_000)
+        }
+        try await Task.sleep(nanoseconds: 50_000_000)
+
+        XCTAssertTrue(flagged.get(), "A missing credential cannot recover by retrying; the user must re-enter it")
+        let stillActive = await worker.active
+        XCTAssertFalse(stillActive)
+    }
+
+    func testRepeatedAmbiguousLoginRejectionsEventuallyFlagReauthentication() async throws {
+        let account = Account(email: "bare-no@example.com", provider: .gmail)
+        let fakeClient = FakeIMAPClient(loginError: .loginRejected("Invalid credentials"))
+        let flagCount = LockProtected<Int>(0)
+
+        let worker = AccountSyncWorker(
+            account: account,
+            imapClient: fakeClient,
+            manualCheckClientFactory: { fakeClient },
+            syncStateStore: syncStore,
+            passwordProvider: { _ in "pw" },
+            reauthenticationHandler: { _ in flagCount.withLock { $0 += 1 } },
+            sleepProvider: { _ in try await Task.sleep(nanoseconds: 5_000_000) },
+            backoffJitter: { 0 }
+        )
+
+        await worker.start()
+        for _ in 0..<200 {
+            if flagCount.get() > 0 { break }
+            try await Task.sleep(nanoseconds: 10_000_000)
+        }
+        try await Task.sleep(nanoseconds: 50_000_000)
+
+        XCTAssertEqual(flagCount.get(), 1)
+        let logins = await fakeClient.loginCallCount
+        XCTAssertEqual(logins, 3, "Flag only after three consecutive ambiguous rejections")
+        let active = await worker.active
+        XCTAssertFalse(active)
+    }
+
+    func testTemporaryLoginRefusalNeverFlagsReauthentication() async throws {
+        let account = Account(email: "busy@example.com", provider: .gmail)
+        let fakeClient = FakeIMAPClient(loginError: .temporarilyUnavailable("too many connections"))
+        let flagCount = LockProtected<Int>(0)
+
+        let worker = AccountSyncWorker(
+            account: account,
+            imapClient: fakeClient,
+            manualCheckClientFactory: { fakeClient },
+            syncStateStore: syncStore,
+            passwordProvider: { _ in "pw" },
+            reauthenticationHandler: { _ in flagCount.withLock { $0 += 1 } },
+            sleepProvider: { _ in try await Task.sleep(nanoseconds: 5_000_000) },
+            backoffJitter: { 0 }
+        )
+
+        await worker.start()
+        for _ in 0..<200 {
+            if await fakeClient.loginCallCount >= 5 { break }
+            try await Task.sleep(nanoseconds: 10_000_000)
+        }
+        let active = await worker.active
+        await worker.stop()
+
+        XCTAssertEqual(flagCount.get(), 0, "A temporary server refusal says nothing about the credentials")
+        XCTAssertTrue(active, "The worker keeps retrying")
+    }
+
+    func testSuccessfulLoginClearsStaleReauthenticationFlagOnce() async throws {
+        let account = Account(email: "stale@example.com", provider: .gmail, needsReauthentication: true)
+        let fakeClient = FakeIMAPClient()
+        let recovered = LockProtected<Int>(0)
+
+        let worker = AccountSyncWorker(
+            account: account,
+            imapClient: fakeClient,
+            manualCheckClientFactory: { fakeClient },
+            syncStateStore: syncStore,
+            defaultSyncFrequency: .oneMinute,
+            passwordProvider: { _ in "pw" },
+            authenticationRecoveredHandler: { _ in recovered.withLock { $0 += 1 } },
+            sleepProvider: { _ in try await Task.sleep(nanoseconds: 5_000_000) }
+        )
+
+        await worker.start()
+        for _ in 0..<100 {
+            if await fakeClient.loginCallCount >= 3 { break }
+            try await Task.sleep(nanoseconds: 10_000_000)
+        }
+        await worker.stop()
+
+        XCTAssertEqual(recovered.get(), 1, "The flag is cleared on the first success, not on every poll")
+    }
+
+    func testUnflaggedAccountDoesNotInvokeRecoveryHandler() async throws {
+        let account = Account(email: "fine@example.com", provider: .gmail)
+        let fakeClient = FakeIMAPClient()
+        let recovered = LockProtected<Int>(0)
+
+        let worker = AccountSyncWorker(
+            account: account,
+            imapClient: fakeClient,
+            manualCheckClientFactory: { fakeClient },
+            syncStateStore: syncStore,
+            defaultSyncFrequency: .oneMinute,
+            passwordProvider: { _ in "pw" },
+            authenticationRecoveredHandler: { _ in recovered.withLock { $0 += 1 } },
+            sleepProvider: { _ in try await Task.sleep(nanoseconds: 5_000_000) }
+        )
+
+        await worker.start()
+        for _ in 0..<50 {
+            if await fakeClient.loginCallCount >= 2 { break }
+            try await Task.sleep(nanoseconds: 10_000_000)
+        }
+        await worker.stop()
+        XCTAssertEqual(recovered.get(), 0)
+    }
+
+    func testReconnectNowInterruptsPollSleepAndReconnectsImmediately() async throws {
+        let account = Account(email: "wake@example.com", provider: .gmail)
+        let fakeClient = FakeIMAPClient()
+
+        let worker = AccountSyncWorker(
+            account: account,
+            imapClient: fakeClient,
+            manualCheckClientFactory: { fakeClient },
+            syncStateStore: syncStore,
+            defaultSyncFrequency: .hourly,
+            passwordProvider: { _ in "pw" },
+            sleepProvider: { _ in try await Task.sleep(nanoseconds: 60_000_000_000) }
+        )
+
+        await worker.start()
+        for _ in 0..<100 {
+            if await fakeClient.connectCallCount >= 1, await !fakeClient.isConnected { break }
+            try await Task.sleep(nanoseconds: 10_000_000)
+        }
+        let before = await fakeClient.connectCallCount
+        XCTAssertEqual(before, 1)
+
+        await worker.reconnectNow()
+        for _ in 0..<100 {
+            if await fakeClient.connectCallCount > before { break }
+            try await Task.sleep(nanoseconds: 10_000_000)
+        }
+        let after = await fakeClient.connectCallCount
+        await worker.stop()
+
+        XCTAssertGreaterThan(after, before, "A wake/network event must not wait out a one-hour poll interval")
+    }
+
+    func testReconnectNowDropsIdleConnection() async throws {
+        let account = Account(email: "idle-wake@example.com", provider: .gmail, syncFrequency: .always)
+        let fakeClient = FakeIMAPClient()
+        await fakeClient.setMailboxStatus(MailboxStatus(uidValidity: 1, uidNext: 10, messageCount: 1, recentCount: 0))
+
+        let worker = AccountSyncWorker(
+            account: account,
+            imapClient: fakeClient,
+            manualCheckClientFactory: { fakeClient },
+            syncStateStore: syncStore,
+            defaultSyncFrequency: .always,
+            passwordProvider: { _ in "pw" },
+            sleepProvider: { _ in try await Task.sleep(nanoseconds: 5_000_000) },
+            backoffJitter: { 0 }
+        )
+
+        await worker.start()
+        for _ in 0..<100 {
+            if await fakeClient.startIdleCallCount >= 1 { break }
+            try await Task.sleep(nanoseconds: 10_000_000)
+        }
+        let connectsBefore = await fakeClient.connectCallCount
+
+        await worker.reconnectNow()
+        for _ in 0..<300 {
+            if await fakeClient.connectCallCount > connectsBefore { break }
+            try await Task.sleep(nanoseconds: 10_000_000)
+        }
+        let connectsAfter = await fakeClient.connectCallCount
+        await worker.stop()
+
+        XCTAssertGreaterThan(connectsAfter, connectsBefore, "A possibly dead IDLE socket must be replaced")
+    }
+
     func testTransientTimeoutAndConnectionFailuresTriggerRetryWithoutPermanentStop() async throws {
         let account = Account(email: "timeout-test@example.com", provider: .icloud)
 
@@ -283,13 +625,15 @@ final class AccountSyncWorkerTests: XCTestCase {
         let timeoutWorker = AccountSyncWorker(
             account: account,
             imapClient: timeoutClient,
+            manualCheckClientFactory: { timeoutClient },
             syncStateStore: syncStore,
             defaultSyncFrequency: .fiveMinutes,
             passwordProvider: { _ in "secret" },
             sleepProvider: { delay in
                 timeoutDelays.withLock { $0.append(delay) }
                 try await Task.sleep(nanoseconds: 10_000_000)
-            }
+            },
+            backoffJitter: { 0 }
         )
 
         await timeoutWorker.start()
@@ -316,13 +660,15 @@ final class AccountSyncWorkerTests: XCTestCase {
         let connFailWorker = AccountSyncWorker(
             account: account,
             imapClient: connFailClient,
+            manualCheckClientFactory: { connFailClient },
             syncStateStore: syncStore,
             defaultSyncFrequency: .fiveMinutes,
             passwordProvider: { _ in "secret" },
             sleepProvider: { delay in
                 connFailDelays.withLock { $0.append(delay) }
                 try await Task.sleep(nanoseconds: 10_000_000)
-            }
+            },
+            backoffJitter: { 0 }
         )
 
         await connFailWorker.start()
@@ -352,6 +698,7 @@ final class AccountSyncWorkerTests: XCTestCase {
         let worker = AccountSyncWorker(
             account: account,
             imapClient: fakeClient,
+            manualCheckClientFactory: { fakeClient },
             syncStateStore: syncStore,
             defaultSyncFrequency: .fiveMinutes,
             passwordProvider: { _ in
@@ -362,7 +709,8 @@ final class AccountSyncWorkerTests: XCTestCase {
             },
             sleepProvider: { _ in
                 sleepCalled.set(true)
-            }
+            },
+            backoffJitter: { 0 }
         )
 
         await worker.start()
@@ -388,6 +736,7 @@ final class AccountSyncWorkerTests: XCTestCase {
         let worker = AccountSyncWorker(
             account: account,
             imapClient: fakeClient,
+            manualCheckClientFactory: { fakeClient },
             syncStateStore: syncStore,
             passwordProvider: { _ in "secret-pwd" }
         )
@@ -408,15 +757,17 @@ final class AccountSyncWorkerTests: XCTestCase {
         XCTAssertFalse(isConnected)
     }
 
-    func testCheckUnreadCountWhenConnectedReusesConnection() async throws {
+    func testCheckUnreadCountUsesSeparateClientAndLeavesSyncConnectionUntouched() async throws {
         let account = Account(email: "unread-connected@example.com", provider: .gmail, syncFrequency: .always)
-        let fakeClient = FakeIMAPClient()
-        await fakeClient.setMailboxStatus(MailboxStatus(uidValidity: 1, uidNext: 100, messageCount: 10, recentCount: 0))
-        await fakeClient.setUnreadCount(3)
+        let syncClient = FakeIMAPClient()
+        let manualClient = FakeIMAPClient()
+        await syncClient.setMailboxStatus(MailboxStatus(uidValidity: 1, uidNext: 100, messageCount: 10, recentCount: 0))
+        await manualClient.setUnreadCount(3)
 
         let worker = AccountSyncWorker(
             account: account,
-            imapClient: fakeClient,
+            imapClient: syncClient,
+            manualCheckClientFactory: { manualClient },
             syncStateStore: syncStore,
             defaultSyncFrequency: .always,
             passwordProvider: { _ in "secret" },
@@ -424,23 +775,29 @@ final class AccountSyncWorkerTests: XCTestCase {
         )
 
         await worker.start()
-
-        // Wait until worker is connected
         for _ in 0..<50 {
-            let isConnected = await fakeClient.isConnected
-            if isConnected { break }
+            if await syncClient.startIdleCallCount > 0 { break }
             try await Task.sleep(nanoseconds: 10_000_000)
         }
 
-        let initialDisconnects = await fakeClient.disconnectCallCount
+        let syncDisconnectsBefore = await syncClient.disconnectCallCount
+        let stopIdleBefore = await syncClient.stopIdleCallCount
         let count = try await worker.checkUnreadCount()
         XCTAssertEqual(count, 3)
 
-        let unreadCalls = await fakeClient.fetchUnreadCountCallCount
-        let finalDisconnects = await fakeClient.disconnectCallCount
+        let syncUnreadCalls = await syncClient.fetchUnreadCountCallCount
+        let syncDisconnectsAfter = await syncClient.disconnectCallCount
+        let stopIdleAfter = await syncClient.stopIdleCallCount
+        let syncStillConnected = await syncClient.isConnected
+        let manualUnreadCalls = await manualClient.fetchUnreadCountCallCount
+        let manualConnected = await manualClient.isConnected
 
-        XCTAssertEqual(unreadCalls, 1)
-        XCTAssertEqual(finalDisconnects, initialDisconnects, "Should not disconnect pre-existing connection")
+        XCTAssertEqual(syncUnreadCalls, 0, "Manual checks must not run on the sync connection")
+        XCTAssertEqual(syncDisconnectsAfter, syncDisconnectsBefore)
+        XCTAssertEqual(stopIdleAfter, stopIdleBefore, "Manual checks must not interrupt IDLE")
+        XCTAssertTrue(syncStillConnected)
+        XCTAssertEqual(manualUnreadCalls, 1)
+        XCTAssertFalse(manualConnected, "Dedicated manual-check client must be disconnected afterwards")
 
         await worker.stop()
     }
@@ -453,6 +810,7 @@ final class AccountSyncWorkerTests: XCTestCase {
         let worker = AccountSyncWorker(
             account: account,
             imapClient: fakeClient,
+            manualCheckClientFactory: { fakeClient },
             syncStateStore: syncStore,
             passwordProvider: { _ in "secret" }
         )
@@ -470,6 +828,37 @@ final class AccountSyncWorkerTests: XCTestCase {
 }
 
 // MARK: - Thread-safe Test Box
+
+final class WakeSignalTests: XCTestCase {
+    func testWaitEnteredAlreadyCancelledReturnsPromptly() async throws {
+        let signal = WakeSignal()
+        let finished = LockProtected<Bool>(false)
+        Task {
+            await Task {
+                withUnsafeCurrentTask { $0?.cancel() }
+                await signal.wait()
+            }.value
+            finished.set(true)
+        }
+        for _ in 0..<50 {
+            if finished.get() { break }
+            try await Task.sleep(nanoseconds: 20_000_000)
+        }
+        XCTAssertTrue(finished.get(), "WakeSignal.wait() must not strand a continuation when entered cancelled")
+    }
+
+    func testSignalResumesAllWaiters() async throws {
+        let signal = WakeSignal()
+        let resumed = LockProtected<Int>(0)
+        for _ in 0..<3 {
+            Task { await signal.wait(); resumed.withLock { $0 += 1 } }
+        }
+        try await Task.sleep(nanoseconds: 100_000_000)
+        signal.signal()
+        try await Task.sleep(nanoseconds: 100_000_000)
+        XCTAssertEqual(resumed.get(), 3)
+    }
+}
 
 final class LockProtected<T>: @unchecked Sendable {
     private let lock = NSLock()

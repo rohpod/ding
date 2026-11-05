@@ -27,8 +27,6 @@ public enum NotificationActionResolver {
 public struct NotificationActionRouter {
     /// Executes the appropriate system action for the given click behavior and provider.
     ///
-    /// Executes the appropriate system action for the given click behavior and provider.
-    ///
     /// - Parameters:
     ///   - behavior: The resolved click behavior to execute.
     ///   - provider: The mail provider associated with the account.
@@ -103,9 +101,16 @@ public final class NotificationClickHandler: NSObject, UNUserNotificationCenterD
             return
         }
 
+        let isReauthentication = userInfo[NotificationUserInfoKey.kind] as? String == NotificationUserInfoKey.reauthenticationKind
+
         await MainActor.run {
             Self.lastNotificationClickTime = Date()
-            self.handleClick(forAccountID: accountID)
+            if isReauthentication {
+                // The account can't sync until a new app password is entered, so go straight to Settings.
+                AppDelegate.shared?.openSettings()
+            } else {
+                self.handleClick(forAccountID: accountID)
+            }
         }
     }
 
@@ -121,7 +126,7 @@ public final class NotificationClickHandler: NSObject, UNUserNotificationCenterD
             defaultBehavior: AppPreferences.shared.defaultNotificationClickBehavior
         )
 
-        Self.logger.info("Handling notification click for account \(account.displayName, privacy: .public) with resolved behavior: \(behavior.rawValue, privacy: .public)")
+        Self.logger.info("Handling notification click for account \(account.id.uuidString, privacy: .public) with resolved behavior: \(behavior.rawValue, privacy: .public)")
 
         let success = NotificationActionRouter.execute(
             behavior: behavior,

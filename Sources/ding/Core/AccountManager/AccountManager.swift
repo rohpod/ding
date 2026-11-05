@@ -51,6 +51,9 @@ public final class AccountManager: ObservableObject {
     /// The observable list of configured accounts.
     @Published public private(set) var accounts: [Account] = []
 
+    /// A user-facing message set when the accounts file could not be read, so the failure is not silent.
+    @Published public private(set) var loadErrorMessage: String?
+
     private let accountStore: AccountStoreProtocol
     private let keychainService: KeychainServiceProtocol
     private let syncStateStore: SyncStateStoreProtocol
@@ -83,11 +86,11 @@ public final class AccountManager: ObservableObject {
     /// - Parameters:
     ///   - accountStore: The disk store for account metadata. Defaults to `AccountStore()`.
     ///   - keychainService: The credential store for account app passwords. Defaults to `KeychainService.shared`.
-    ///   - syncStateStore: The disk store for account sync state. Defaults to `SyncStateStore()`.
+    ///   - syncStateStore: The disk store for account sync state. Defaults to `SyncStateStore.shared`.
     public init(
         accountStore: AccountStoreProtocol = AccountStore(),
         keychainService: KeychainServiceProtocol = KeychainService.shared,
-        syncStateStore: SyncStateStoreProtocol = SyncStateStore()
+        syncStateStore: SyncStateStoreProtocol = SyncStateStore.shared
     ) {
         self.accountStore = accountStore
         self.keychainService = keychainService
@@ -100,10 +103,25 @@ public final class AccountManager: ObservableObject {
         do {
             self.accounts = try accountStore.load()
             Self.logger.info("Loaded \(self.accounts.count) accounts from disk.")
+        } catch AccountStoreError.decodingFailed(let underlying) {
+            // Never let the next save overwrite an unreadable file: that would permanently drop every account.
+            Self.logger.error("Accounts file could not be decoded: \(underlying.localizedDescription, privacy: .public)")
+            self.accounts = []
+            if let preserved = try? accountStore.quarantineCorruptFile() {
+                loadErrorMessage = "ding couldn't read your saved accounts. The file was kept as \(preserved.lastPathComponent) in ~/Library/Application Support so it can be recovered."
+            } else {
+                loadErrorMessage = "ding couldn't read your saved accounts and could not set the file aside."
+            }
         } catch {
             Self.logger.error("Failed to load accounts from disk: \(error.localizedDescription, privacy: .public)")
             self.accounts = []
+            loadErrorMessage = "ding couldn't read your saved accounts: \(error.localizedDescription)"
         }
+    }
+
+    /// Hides the load error banner once the user has seen it.
+    public func dismissLoadError() {
+        loadErrorMessage = nil
     }
 
     /// Creates and persists a new mail account along with its credentials.
@@ -160,7 +178,7 @@ public final class AccountManager: ObservableObject {
             throw error
         }
 
-        Self.logger.info("Successfully added account \(account.id.uuidString, privacy: .public) (\(account.email, privacy: .public))")
+        Self.logger.info("Successfully added account \(account.id.uuidString, privacy: .public)")
         return account
     }
 

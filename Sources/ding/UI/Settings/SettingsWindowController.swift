@@ -5,8 +5,8 @@ import SwiftUI
 /// Controls the lifecycle and presentation of the "ding Settings" window.
 ///
 /// This controller hosts the SwiftUI `SettingsView` in an AppKit window.
-/// It ensures that only a single instance of the window is created and that closing the window
-/// hides it without quitting the application or releasing the window object.
+/// It ensures that only one window exists at a time. Closing the window does not quit the application; the
+/// view hierarchy is torn down on close to release its memory, and the owner recreates the controller on demand.
 @MainActor
 final class SettingsWindowController: NSWindowController, NSWindowDelegate {
     nonisolated private static let logger = Logger(subsystem: DingLog.subsystem, category: "SettingsWindow")

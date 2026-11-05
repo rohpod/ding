@@ -1,6 +1,5 @@
 import Foundation
 import os
-import NIO
 import NIOCore
 import NIOPosix
 import NIOSSL
@@ -40,6 +39,15 @@ public actor NIOIMAPClient: IMAPConnecting {
 
     /// Shared single-threaded `EventLoopGroup` used across all client instances to minimize RAM and OS threads.
     public static let sharedEventLoopGroup: any EventLoopGroup = MultiThreadedEventLoopGroup(numberOfThreads: 1)
+
+    /// Shared client TLS context. Creating an `NIOSSLContext` is expensive (it loads the system trust store and
+    /// performs blocking disk I/O) and the type is documented as thread-safe, so it is built once and reused
+    /// across every connection. Held as a `Result` so a creation failure still surfaces through `connect`.
+    private static let sharedSSLContext: Result<NIOSSLContext, any Error> = Result {
+        var configuration = TLSConfiguration.makeClientConfiguration()
+        configuration.minimumTLSVersion = .tlsv12
+        return try NIOSSLContext(configuration: configuration)
+    }
 
     private let eventLoopGroup: any EventLoopGroup
     private let ownsEventLoopGroup: Bool
@@ -135,11 +143,11 @@ public actor NIOIMAPClient: IMAPConnecting {
             case .ok:
                 Self.logger.info("IMAP authentication succeeded for \(self.currentHost ?? "server", privacy: .public)")
             case .no(let responseText):
-                Self.logger.warning("IMAP authentication failed (NO) from \(self.currentHost ?? "server", privacy: .public): \(responseText.text, privacy: .public)")
-                throw IMAPClientError.authenticationFailed
+                Self.logger.warning("IMAP login rejected (NO) from \(self.currentHost ?? "server", privacy: .public): \(responseText.text, privacy: .public)")
+                throw Self.classifyLoginRejection(responseText)
             case .bad(let responseText):
-                Self.logger.warning("IMAP authentication failed (BAD) from \(self.currentHost ?? "server", privacy: .public): \(responseText.text, privacy: .public)")
-                throw IMAPClientError.authenticationFailed
+                Self.logger.warning("IMAP login rejected (BAD) from \(self.currentHost ?? "server", privacy: .public): \(responseText.text, privacy: .public)")
+                throw Self.classifyLoginRejection(responseText)
             }
         } catch let clientError as IMAPClientError {
             throw clientError
@@ -292,23 +300,46 @@ public actor NIOIMAPClient: IMAPConnecting {
     }
 
     /// Fetches lightweight header summaries for messages with a UID greater than `sinceUID`.
+    ///
+    /// Done in two steps to bound memory and bandwidth no matter how large the backlog is: first only the UIDs
+    /// (a few bytes each), then the envelope only when exactly one message is new, because that is the only case
+    /// where a notification shows a sender and subject. Larger batches are summarised by count alone.
     public func fetchNewMessages(sinceUID: UInt32) async throws -> [MessageSummary] {
-        guard self.isConnected, let channel = self.channel, let handler = self.responseHandler else {
-            throw IMAPClientError.notConnected
-        }
-
         guard sinceUID < UInt32.max else {
             return []
         }
 
         Self.logger.info("Fetching new messages since UID \(sinceUID, privacy: .public)")
 
+        let backlog = UIDSet([UIDRange(UID(rawValue: sinceUID + 1)...)])
+        let found = try await fetchMessages(matching: backlog, attributes: [.uid], sinceUID: sinceUID)
+
+        guard found.count == 1, let only = found.first else {
+            return found
+        }
+
+        let single = UIDSet([UIDRange(UID(rawValue: only.uid)...UID(rawValue: only.uid))])
+        let detailed = try await fetchMessages(matching: single, attributes: [.uid, .envelope], sinceUID: sinceUID)
+        return detailed.isEmpty ? found : detailed
+    }
+
+    /// Issues one `UID FETCH` and parses the untagged `FETCH` responses into summaries (ascending by UID).
+    private func fetchMessages(
+        matching uidSet: UIDSet,
+        attributes: [FetchAttribute],
+        sinceUID: UInt32
+    ) async throws -> [MessageSummary] {
+        guard self.isConnected, let channel = self.channel, let handler = self.responseHandler else {
+            throw IMAPClientError.notConnected
+        }
+
+        // This fetch picks up everything the server has announced so far.
+        handler.clearPendingExists()
+
         let tag = nextTag()
-        let range = UIDRange(UID(rawValue: sinceUID + 1)...)
-        let uidSet = UIDSet([range])
         guard let command = Command.uidFetch(
             messages: uidSet,
-            attributes: [.uid, .envelope, .internalDate],
+            attributes: attributes,
             modifiers: []
         ) else {
             return []
@@ -339,18 +370,16 @@ public actor NIOIMAPClient: IMAPConnecting {
             var summaries: [MessageSummary] = []
             var currentUID: UInt32?
             var currentEnvelope: Envelope?
-            var currentDate: Date?
 
             func flushCurrent() {
+                // "n:*" always includes the highest message even when its UID is below n, so filter explicitly.
                 if let uid = currentUID, uid > sinceUID {
-                    let subject = currentEnvelope?.subject.flatMap { String(buffer: $0) } ?? ""
-                    let from = self.formatFrom(currentEnvelope?.from)
-                    let date = currentDate ?? self.parseEnvelopeDate(currentEnvelope?.date) ?? Date()
-                    summaries.append(MessageSummary(uid: uid, subject: subject, from: from, dateReceived: date))
+                    let subject = RFC2047Decoder.decode(currentEnvelope?.subject.flatMap { String(buffer: $0) } ?? "")
+                    let from = currentEnvelope == nil ? "" : self.formatFrom(currentEnvelope?.from)
+                    summaries.append(MessageSummary(uid: uid, subject: subject, from: from, dateReceived: Date()))
                 }
                 currentUID = nil
                 currentEnvelope = nil
-                currentDate = nil
             }
 
             for fetchPart in response.fetchResponses {
@@ -366,17 +395,6 @@ public actor NIOIMAPClient: IMAPConnecting {
                         currentUID = uid.rawValue
                     case .envelope(let envelope):
                         currentEnvelope = envelope
-                    case .internalDate(let serverDate):
-                        var dc = DateComponents()
-                        let c = serverDate.components
-                        dc.year = c.year
-                        dc.month = c.month
-                        dc.day = c.day
-                        dc.hour = c.hour
-                        dc.minute = c.minute
-                        dc.second = c.second
-                        dc.timeZone = TimeZone(secondsFromGMT: c.zoneMinutes * 60)
-                        currentDate = Calendar(identifier: .gregorian).date(from: dc)
                     default:
                         break
                     }
@@ -405,10 +423,6 @@ public actor NIOIMAPClient: IMAPConnecting {
     public func fetchUnreadCount() async throws -> Int {
         guard self.isConnected, let channel = self.channel, let handler = self.responseHandler else {
             throw IMAPClientError.notConnected
-        }
-
-        if self.activeIdleTag != nil {
-            try await self.stopIdle()
         }
 
         Self.logger.info("Fetching unread count for INBOX on \(self.currentHost ?? "server", privacy: .public)")
@@ -455,7 +469,11 @@ public actor NIOIMAPClient: IMAPConnecting {
                 }
             }
 
-            let resolvedCount = unseenCount ?? 0
+            // A reply without the count must not be reported as "0 unread": that would tell the user their
+            // inbox is empty when the check actually failed.
+            guard let resolvedCount = unseenCount else {
+                throw IMAPClientError.unexpectedResponse("STATUS INBOX reply did not include an unseen count")
+            }
             Self.logger.info("STATUS INBOX returned \(resolvedCount, privacy: .public) unread message(s)")
             return resolvedCount
         } catch let clientError as IMAPClientError {
@@ -503,7 +521,10 @@ public actor NIOIMAPClient: IMAPConnecting {
 
             return false
         } catch {
-            return false
+            // Do not downgrade to polling just because CAPABILITY failed: this is a connection problem, and the
+            // caller should reconnect rather than conclude the server lacks IDLE.
+            if error is CancellationError { throw IMAPClientError.timeout }
+            throw self.mapError(error)
         }
     }
 
@@ -529,6 +550,7 @@ public actor NIOIMAPClient: IMAPConnecting {
             streamContinuation = continuation
         }
 
+        handler.prepareForIdleStart()
         handler.setIdleContinuation(streamContinuation)
 
         do {
@@ -568,11 +590,32 @@ public actor NIOIMAPClient: IMAPConnecting {
                 _ = try await handler.waitForCommand(tag: tag)
             }
         } catch {
+            // A server that never acknowledges DONE usually means a dead socket. Surface the failure so the
+            // worker reconnects instead of carrying on as if IDLE had ended cleanly.
             Self.logger.warning("Error stopping IDLE: \(error.localizedDescription, privacy: .public)")
+            handler.finishIdleContinuation()
+            throw self.mapError(error)
         }
 
-        handler.setIdleContinuation(nil)
+        // Finish (not just drop) the stream so any consumer suspended on it wakes up and can resume IDLE.
+        handler.finishIdleContinuation()
         Self.logger.info("IMAP IDLE session ended")
+    }
+
+    /// Maps a rejected `LOGIN` to an error, using the response code (RFC 5530) when the server supplies one.
+    ///
+    /// Only an explicit authentication or authorization code is treated as proof that the credentials are bad.
+    /// Codes describing server-side conditions are retryable, and a bare `NO` is ambiguous: some providers
+    /// use it for both wrong passwords and temporary policy rejections.
+    static func classifyLoginRejection(_ responseText: ResponseText) -> IMAPClientError {
+        switch responseText.code {
+        case .some(.authenticationFailed), .some(.authorizationFailed), .some(.expired):
+            return .authenticationFailed
+        case .some(.unavailable), .some(.limit), .some(.inUse), .some(.serverBug), .some(.cannot):
+            return .temporarilyUnavailable(responseText.text)
+        default:
+            return .loginRejected(responseText.text)
+        }
     }
 
     // MARK: - Internal Message Parsing Helpers
@@ -584,7 +627,7 @@ public actor NIOIMAPClient: IMAPConnecting {
 
         switch first {
         case .singleAddress(let address):
-            let person = address.personName.flatMap { String(buffer: $0) }?.trimmingCharacters(in: .whitespacesAndNewlines)
+            let person = address.personName.flatMap { RFC2047Decoder.decode(String(buffer: $0)) }?.trimmingCharacters(in: .whitespacesAndNewlines)
             let mailbox = address.mailbox.flatMap { String(buffer: $0) }?.trimmingCharacters(in: .whitespacesAndNewlines)
             let host = address.host.flatMap { String(buffer: $0) }?.trimmingCharacters(in: .whitespacesAndNewlines)
 
@@ -606,31 +649,19 @@ public actor NIOIMAPClient: IMAPConnecting {
             return "Unknown Sender"
 
         case .group(let group):
-            return String(buffer: group.groupName)
+            return RFC2047Decoder.decode(String(buffer: group.groupName))
         }
-    }
-
-    private func parseEnvelopeDate(_ messageDate: InternetMessageDate?) -> Date? {
-        guard let messageDate = messageDate else { return nil }
-        let raw = String(messageDate)
-        let formatter = DateFormatter()
-        formatter.locale = Locale(identifier: "en_US_POSIX")
-        formatter.dateFormat = "EEE, dd MMM yyyy HH:mm:ss Z"
-        if let d = formatter.date(from: raw) { return d }
-        formatter.dateFormat = "dd MMM yyyy HH:mm:ss Z"
-        if let d = formatter.date(from: raw) { return d }
-        return nil
     }
 
     // MARK: - Internal Connection Setup
 
     private func performConnect(host: String, port: Int) async throws {
         let handler = IMAPResponseHandler()
-        let sslContext = try NIOSSLContext(configuration: .makeClientConfiguration())
+        let sslContext = try Self.sharedSSLContext.get()
 
         let bootstrap = ClientBootstrap(group: self.eventLoopGroup)
             .connectTimeout(.seconds(15))
-            .channelOption(ChannelOptions.socketOption(.so_reuseaddr), value: 1)
+            .channelOption(ChannelOptions.socketOption(.so_keepalive), value: 1)
             .channelInitializer { channel in
                 channel.eventLoop.makeCompletedFuture {
                     // Port 993 implies implicit TLS. NIOSSLClientHandler initiates TLS immediately.
@@ -713,302 +744,6 @@ public actor NIOIMAPClient: IMAPConnecting {
             let result = try await group.next()!
             group.cancelAll()
             return result
-        }
-    }
-}
-
-// MARK: - Inbound Response Handler
-
-/// Parsed container bundling a tagged command response along with correlated untagged and fetch payloads.
-struct ParsedCommandResponse: Sendable {
-    let tagged: TaggedResponse
-    let untagged: [ResponsePayload]
-    let fetchResponses: [FetchResponse]
-}
-
-/// Channel inbound handler that coordinates server responses with async/await callers.
-///
-/// Thread-safety is achieved via an `NSLock` protecting continuation and buffered response storage,
-/// allowing safe synchronization between the NIO `EventLoop` thread and calling Swift Concurrency tasks.
-private final class IMAPResponseHandler: ChannelInboundHandler, @unchecked Sendable {
-    typealias InboundIn = Response
-
-    private let lock = NSLock()
-    private var greetingContinuation: CheckedContinuation<Void, any Error>?
-    private var activeCommandTag: String?
-    private var pendingCommands: [String: CheckedContinuation<ParsedCommandResponse, any Error>] = [:]
-    private var bufferedCommandResponses: [String: ParsedCommandResponse] = [:]
-    private var untaggedBuffers: [String: [ResponsePayload]] = [:]
-    private var fetchBuffers: [String: [FetchResponse]] = [:]
-    private var cancelledCommandTags: Set<String> = []
-    private var cancelledTagOrder: [String] = []
-    private let maxCancelledTags = 64
-    private var idleContinuation: AsyncThrowingStream<IdleEvent, any Error>.Continuation?
-    private var idleStartContinuation: CheckedContinuation<Void, any Error>?
-    private var caughtError: (any Error)?
-    private var hasReceivedGreeting: Bool = false
-    private var isChannelInactive: Bool = false
-
-    func channelRead(context: ChannelHandlerContext, data: NIOAny) {
-        let response = self.unwrapInboundIn(data)
-        switch response {
-        case .tagged(let taggedResponse):
-            lock.lock()
-            if activeCommandTag == taggedResponse.tag {
-                activeCommandTag = nil
-            }
-            let untagged = untaggedBuffers.removeValue(forKey: taggedResponse.tag) ?? []
-            let fetches = fetchBuffers.removeValue(forKey: taggedResponse.tag) ?? []
-            let parsed = ParsedCommandResponse(tagged: taggedResponse, untagged: untagged, fetchResponses: fetches)
-
-            if let idleStart = idleStartContinuation {
-                idleStartContinuation = nil
-                lock.unlock()
-                idleStart.resume(throwing: IMAPClientError.idleNotSupported)
-                return
-            }
-
-            if let continuation = pendingCommands.removeValue(forKey: taggedResponse.tag) {
-                lock.unlock()
-                continuation.resume(returning: parsed)
-            } else if cancelledCommandTags.remove(taggedResponse.tag) != nil {
-                // Command was already cancelled/timed out; drop late response to prevent leak
-                cancelledTagOrder.removeAll { $0 == taggedResponse.tag }
-                lock.unlock()
-            } else {
-                bufferedCommandResponses[taggedResponse.tag] = parsed
-                lock.unlock()
-            }
-
-        case .untagged(let payload):
-            lock.lock()
-            if !hasReceivedGreeting {
-                hasReceivedGreeting = true
-                let continuation = greetingContinuation
-                greetingContinuation = nil
-                lock.unlock()
-                continuation?.resume()
-            } else {
-                if let tag = activeCommandTag {
-                    untaggedBuffers[tag, default: []].append(payload)
-                }
-                if let idle = idleContinuation {
-                    switch payload {
-                    case .mailboxData(let mbData):
-                        switch mbData {
-                        case .exists, .recent:
-                            idle.yield(.newMailAvailable)
-                        default:
-                            break
-                        }
-                    default:
-                        break
-                    }
-                }
-                lock.unlock()
-            }
-
-        case .fetch(let fetchResponse):
-            lock.lock()
-            if let tag = activeCommandTag {
-                fetchBuffers[tag, default: []].append(fetchResponse)
-            }
-            if let idle = idleContinuation {
-                idle.yield(.newMailAvailable)
-            }
-            lock.unlock()
-
-        case .idleStarted:
-            lock.lock()
-            let continuation = idleStartContinuation
-            idleStartContinuation = nil
-            lock.unlock()
-            continuation?.resume()
-
-        case .fatal(let responseText):
-            let error = IMAPClientError.connectionFailed(
-                underlying: NSError(
-                    domain: "com.ding.mac.v3.imap",
-                    code: -1,
-                    userInfo: [NSLocalizedDescriptionKey: "Server closed connection: \(responseText.text)"]
-                )
-            )
-            failAll(with: error)
-
-        case .authenticationChallenge:
-            break
-        }
-    }
-
-    func errorCaught(context: ChannelHandlerContext, error: any Error) {
-        failAll(with: error)
-        context.fireErrorCaught(error)
-    }
-
-    func channelInactive(context: ChannelHandlerContext) {
-        lock.lock()
-        isChannelInactive = true
-        let existingError = caughtError
-        lock.unlock()
-
-        let fallback = existingError ?? IMAPClientError.connectionFailed(underlying: ChannelError.ioOnClosedChannel)
-        failAll(with: fallback)
-        context.fireChannelInactive()
-    }
-
-    func waitForGreeting() async throws {
-        try await withTaskCancellationHandler {
-            try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, any Error>) in
-                lock.lock()
-                if let error = caughtError {
-                    lock.unlock()
-                    continuation.resume(throwing: error)
-                    return
-                }
-                if isChannelInactive {
-                    lock.unlock()
-                    continuation.resume(throwing: IMAPClientError.connectionFailed(underlying: ChannelError.ioOnClosedChannel))
-                    return
-                }
-                if hasReceivedGreeting {
-                    lock.unlock()
-                    continuation.resume()
-                    return
-                }
-                greetingContinuation = continuation
-                lock.unlock()
-            }
-        } onCancel: {
-            self.cancelGreeting()
-        }
-    }
-
-    func beginCommand(tag: String) {
-        lock.lock()
-        activeCommandTag = tag
-        untaggedBuffers[tag] = []
-        fetchBuffers[tag] = []
-        if cancelledCommandTags.remove(tag) != nil {
-            cancelledTagOrder.removeAll { $0 == tag }
-        }
-        lock.unlock()
-    }
-
-    func waitForCommand(tag: String) async throws -> ParsedCommandResponse {
-        try await withTaskCancellationHandler {
-            try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<ParsedCommandResponse, any Error>) in
-                lock.lock()
-                if let error = caughtError {
-                    lock.unlock()
-                    continuation.resume(throwing: error)
-                    return
-                }
-                if isChannelInactive {
-                    lock.unlock()
-                    continuation.resume(throwing: IMAPClientError.notConnected)
-                    return
-                }
-                if let buffered = bufferedCommandResponses.removeValue(forKey: tag) {
-                    lock.unlock()
-                    continuation.resume(returning: buffered)
-                    return
-                }
-                pendingCommands[tag] = continuation
-                lock.unlock()
-            }
-        } onCancel: {
-            self.cancel(tag: tag)
-        }
-    }
-
-    func setIdleContinuation(_ continuation: AsyncThrowingStream<IdleEvent, any Error>.Continuation?) {
-        lock.lock()
-        idleContinuation = continuation
-        lock.unlock()
-    }
-
-    func waitForIdleStart() async throws {
-        try await withTaskCancellationHandler {
-            try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, any Error>) in
-                lock.lock()
-                if let error = caughtError {
-                    lock.unlock()
-                    continuation.resume(throwing: error)
-                    return
-                }
-                if isChannelInactive {
-                    lock.unlock()
-                    continuation.resume(throwing: IMAPClientError.notConnected)
-                    return
-                }
-                idleStartContinuation = continuation
-                lock.unlock()
-            }
-        } onCancel: {
-            self.cancelIdleStart()
-        }
-    }
-
-    private func cancelIdleStart() {
-        lock.lock()
-        let continuation = idleStartContinuation
-        idleStartContinuation = nil
-        lock.unlock()
-        continuation?.resume(throwing: CancellationError())
-    }
-
-    private func cancelGreeting() {
-        lock.lock()
-        let continuation = greetingContinuation
-        greetingContinuation = nil
-        lock.unlock()
-        continuation?.resume(throwing: CancellationError())
-    }
-
-    private func cancel(tag: String) {
-        lock.lock()
-        let continuation = pendingCommands.removeValue(forKey: tag)
-        bufferedCommandResponses.removeValue(forKey: tag)
-        untaggedBuffers.removeValue(forKey: tag)
-        fetchBuffers.removeValue(forKey: tag)
-        if activeCommandTag == tag {
-            activeCommandTag = nil
-        }
-        if cancelledCommandTags.insert(tag).inserted {
-            cancelledTagOrder.append(tag)
-            if cancelledTagOrder.count > maxCancelledTags {
-                let oldest = cancelledTagOrder.removeFirst()
-                cancelledCommandTags.remove(oldest)
-            }
-        }
-        lock.unlock()
-        continuation?.resume(throwing: CancellationError())
-    }
-
-    private func failAll(with error: any Error) {
-        lock.lock()
-        caughtError = error
-        let greeting = greetingContinuation
-        greetingContinuation = nil
-        let idleStart = idleStartContinuation
-        idleStartContinuation = nil
-        let idle = idleContinuation
-        idleContinuation = nil
-        let commands = pendingCommands
-        pendingCommands.removeAll()
-        bufferedCommandResponses.removeAll()
-        untaggedBuffers.removeAll()
-        fetchBuffers.removeAll()
-        cancelledCommandTags.removeAll()
-        cancelledTagOrder.removeAll()
-        activeCommandTag = nil
-        lock.unlock()
-
-        greeting?.resume(throwing: error)
-        idleStart?.resume(throwing: error)
-        idle?.finish(throwing: error)
-        for (_, continuation) in commands {
-            continuation.resume(throwing: error)
         }
     }
 }

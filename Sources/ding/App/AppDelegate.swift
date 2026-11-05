@@ -20,7 +20,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// Active background task consuming the aggregated new mail event stream.
     private var mailStreamTask: Task<Void, Never>?
 
-    /// Controller for the settings window, preserved across openings and closings.
+    /// Controller for the settings window; created on demand and released when the window closes.
     private var settingsWindowController: SettingsWindowController?
 
     /// Combine subscriptions for observing preferences changes.
@@ -61,20 +61,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             await notificationService.requestPermissionIfNeeded()
         }
 
-        // Manual launches open the Settings window automatically to ensure the user has immediate
-        // access to configuration even if the menu bar icon is hidden. Automatic login-item launches
-        // start silently as a menu bar agent only.
-        let wasLaunchedAsLoginItem: Bool = {
-            guard let event = NSAppleEventManager.shared().currentAppleEvent else { return false }
-            let launchedAsLogInItemDescriptor = event.attributeDescriptor(forKeyword: keyAELaunchedAsLogInItem)
-            return launchedAsLogInItemDescriptor?.booleanValue ?? false
-        }()
-
-        if wasLaunchedAsLoginItem {
-            Self.logger.info("Launched as login item; skipping automatic Settings presentation.")
-        } else {
-            openSettings()
-        }
+        // Settings are not opened automatically on launch. Users reach them from the menu bar icon,
+        // or by relaunching ding (see applicationShouldHandleReopen) when the icon is hidden.
     }
 
     /// Handles application reopen events (e.g. launching ding from Applications or Spotlight while already running).

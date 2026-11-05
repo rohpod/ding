@@ -41,6 +41,14 @@ public enum IMAPClientError: LocalizedError, Sendable, Equatable {
     /// The `SELECT` command failed or returned invalid/missing mailbox state.
     case selectFailed(String)
 
+    /// The server refused the login for a reason that is not about the credentials
+    /// (maintenance, a rate limit, too many sessions). Retrying later is expected to work.
+    case temporarilyUnavailable(String)
+
+    /// The server rejected the login without a machine-readable reason. This may be a wrong password
+    /// or a transient server policy, so callers should retry before concluding the credentials are bad.
+    case loginRejected(String)
+
     public var errorDescription: String? {
         switch self {
         case .connectionFailed(let underlying):
@@ -59,6 +67,10 @@ public enum IMAPClientError: LocalizedError, Sendable, Equatable {
             return "The mail server does not support real-time IDLE push notifications."
         case .selectFailed(let details):
             return "Failed to select mailbox: \(details)"
+        case .temporarilyUnavailable(let details):
+            return "The mail server is temporarily unavailable: \(details)"
+        case .loginRejected(let details):
+            return "The mail server rejected the login (\(details)). The email address or App Password may be incorrect."
         }
     }
 
@@ -74,6 +86,12 @@ public enum IMAPClientError: LocalizedError, Sendable, Equatable {
             return lhsDetails == rhsDetails
 
         case (.selectFailed(let lhsDetails), .selectFailed(let rhsDetails)):
+            return lhsDetails == rhsDetails
+
+        case (.temporarilyUnavailable(let lhsDetails), .temporarilyUnavailable(let rhsDetails)):
+            return lhsDetails == rhsDetails
+
+        case (.loginRejected(let lhsDetails), .loginRejected(let rhsDetails)):
             return lhsDetails == rhsDetails
 
         case (.connectionFailed(let lhsError), .connectionFailed(let rhsError)):

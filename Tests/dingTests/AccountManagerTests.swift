@@ -348,4 +348,37 @@ final class AccountManagerTests: XCTestCase {
         XCTAssertEqual(cached, "valid-pass")
         XCTAssertEqual(mockKeychain.retrieveCalls(forAccountID: account.id), 2)
     }
+
+    @MainActor
+    func testCorruptAccountsFileIsPreservedAndNotOverwrittenByAddingAnAccount() throws {
+        let fileURL = testStore.fileURL
+        try FileManager.default.createDirectory(at: fileURL.deletingLastPathComponent(), withIntermediateDirectories: true)
+        let corruptBytes = Data("{ not valid json".utf8)
+        try corruptBytes.write(to: fileURL)
+
+        let manager = AccountManager(accountStore: testStore, keychainService: mockKeychain)
+        XCTAssertTrue(manager.accounts.isEmpty)
+        XCTAssertNotNil(manager.loadErrorMessage, "The user must be told their accounts could not be read")
+
+        _ = try manager.addAccount(email: "new@gmail.com", provider: .gmail, appPassword: "pwd")
+
+        let directory = fileURL.deletingLastPathComponent()
+        let preserved = try FileManager.default.contentsOfDirectory(atPath: directory.path)
+            .filter { $0.hasPrefix("accounts.corrupt-") }
+        XCTAssertEqual(preserved.count, 1)
+        let preservedData = try Data(contentsOf: directory.appendingPathComponent(preserved[0]))
+        XCTAssertEqual(preservedData, corruptBytes, "The original bytes must survive for manual recovery")
+        XCTAssertEqual(try testStore.load().count, 1, "The fresh file holds only the newly added account")
+
+        manager.dismissLoadError()
+        XCTAssertNil(manager.loadErrorMessage)
+    }
+
+    @MainActor
+    func testHealthyAccountsFileProducesNoLoadError() throws {
+        try testStore.save([Account(email: "ok@gmail.com", provider: .gmail)])
+        let manager = AccountManager(accountStore: testStore, keychainService: mockKeychain)
+        XCTAssertEqual(manager.accounts.count, 1)
+        XCTAssertNil(manager.loadErrorMessage)
+    }
 }

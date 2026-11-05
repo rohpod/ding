@@ -40,6 +40,15 @@ struct AccountsSettingsView: View {
     }
 
     var body: some View {
+        VStack(spacing: 0) {
+            if let message = accountManager.loadErrorMessage {
+                loadErrorBanner(message)
+            }
+            accountsSplitView
+        }
+    }
+
+    private var accountsSplitView: some View {
         HStack(spacing: 0) {
             // MARK: - Left Column (Account List & Management)
             VStack(spacing: 0) {
@@ -56,7 +65,7 @@ struct AccountsSettingsView: View {
             // MARK: - Right Panel (Account Detail / Empty State)
             Group {
                 if let account = selectedAccount {
-                    AccountDetailView(account: account, accountManager: accountManager)
+                    AccountDetailView(account: account, accountManager: accountManager, imapClientFactory: imapClientFactory)
                         .id(account.id)
                 } else {
                     emptyStateView
@@ -90,6 +99,22 @@ struct AccountsSettingsView: View {
     }
 
     // MARK: - Subviews
+
+    private func loadErrorBanner(_ message: String) -> some View {
+        HStack(alignment: .top, spacing: 8) {
+            Image(systemName: "exclamationmark.triangle.fill")
+                .foregroundColor(.orange)
+            Text(message)
+                .font(.caption)
+                .fixedSize(horizontal: false, vertical: true)
+            Spacer()
+            Button("Dismiss") { accountManager.dismissLoadError() }
+                .buttonStyle(.link)
+                .font(.caption)
+        }
+        .padding(10)
+        .background(Color.orange.opacity(0.12))
+    }
 
     @ViewBuilder
     private var accountListView: some View {
@@ -208,7 +233,7 @@ struct AccountsSettingsView: View {
 
     private func handleRemoveSelectedAccount() {
         guard let account = selectedAccount else { return }
-        Self.logger.info("Removing account \(account.id.uuidString, privacy: .public) (\(account.email, privacy: .public))")
+        Self.logger.info("Removing account \(account.id.uuidString, privacy: .public)")
         do {
             try accountManager.removeAccount(id: account.id)
         } catch {
@@ -256,6 +281,7 @@ private struct AccountDetailView: View {
 
     let account: Account
     @ObservedObject var accountManager: AccountManager
+    let imapClientFactory: @Sendable (MailProvider) -> any IMAPConnecting
 
     @State private var aliasText: String = ""
     @State private var newAppPassword: String = ""
@@ -503,9 +529,22 @@ private struct AccountDetailView: View {
         isUpdatingPassword = true
         reauthErrorMessage = nil
 
+        Task {
+            await verifyAndUpdatePassword(cleaned)
+        }
+    }
+
+    /// Verifies the new password against the mail server before storing it, so a mistyped password
+    /// cannot clear the re-authentication banner while the account is still unable to sign in.
+    private func verifyAndUpdatePassword(_ cleaned: String) async {
+        let client = imapClientFactory(account.provider)
         do {
+            try await client.connect(host: account.provider.imapHost, port: account.provider.imapPort)
+            try await client.login(email: account.email, password: cleaned)
+            await client.disconnect()
+
             try accountManager.updatePassword(forAccountID: account.id, newPassword: cleaned)
-            var updated = account
+            var updated = accountManager.accounts.first(where: { $0.id == account.id }) ?? account
             updated.needsReauthentication = false
             try accountManager.updateAccount(updated)
 
@@ -513,6 +552,7 @@ private struct AccountDetailView: View {
             isUpdatingPassword = false
             Self.logger.info("Successfully updated password and cleared re-authentication requirement for \(self.account.id.uuidString, privacy: .public)")
         } catch {
+            await client.disconnect()
             isUpdatingPassword = false
             reauthErrorMessage = error.localizedDescription
             Self.logger.error("Failed to update password for account \(self.account.id.uuidString, privacy: .public): \(error.localizedDescription, privacy: .public)")

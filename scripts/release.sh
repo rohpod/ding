@@ -13,6 +13,7 @@ set -euo pipefail
 # Usage:
 #   ./scripts/release.sh          # Package release for current VERSION
 #   ./scripts/release.sh --force  # Overwrite existing release archive without prompt
+#   ./scripts/release.sh --allow-dirty  # Permit uncommitted changes (not recommended for real releases)
 # ==============================================================================
 
 # 1. Resolve repository root directory regardless of current working directory
@@ -22,23 +23,28 @@ cd "$REPO_ROOT"
 
 # 2. Parse command-line flags
 FORCE=false
+ALLOW_DIRTY=false
 
 for arg in "$@"; do
     case "$arg" in
         -f|--force)
             FORCE=true
             ;;
+        --allow-dirty)
+            ALLOW_DIRTY=true
+            ;;
         -h|--help)
-            echo "Usage: $0 [--force|-f] [--help|-h]"
+            echo "Usage: $0 [--force|-f] [--allow-dirty] [--help|-h]"
             echo ""
             echo "Options:"
             echo "  -f, --force    Overwrite existing release zip without confirmation prompt"
+            echo "  --allow-dirty  Allow releasing with uncommitted changes in the working tree"
             echo "  -h, --help     Show this help message and exit"
             exit 0
             ;;
         *)
             echo "Error: Unknown argument '$arg'." >&2
-            echo "Usage: $0 [--force|-f] [--help|-h]" >&2
+            echo "Usage: $0 [--force|-f] [--allow-dirty] [--help|-h]" >&2
             exit 1
             ;;
     esac
@@ -64,6 +70,25 @@ if ! [[ "$APP_VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
     echo "Error: Invalid version format '$APP_VERSION' in $VERSION_FILE." >&2
     echo "Version must follow semantic versioning (x.y.z with numeric digits only, e.g. 0.1.0)." >&2
     exit 1
+fi
+
+# A development build uses a different bundle ID, Keychain service and data folder. Shipping one to users
+# would silently break their installs, so refuse to continue if the dev flag leaked in from the environment.
+if [ "${DING_DEV_BUILD:-0}" = "1" ]; then
+    echo "Error: DING_DEV_BUILD=1 is set; a release must be a production build." >&2
+    echo "Run: unset DING_DEV_BUILD" >&2
+    exit 1
+fi
+
+# A release must be reproducible from a commit, so refuse to package uncommitted changes.
+# appcast.xml is excluded because this script rewrites it.
+if [ "$ALLOW_DIRTY" = false ] && command -v git >/dev/null 2>&1 && git -C "$REPO_ROOT" rev-parse --git-dir >/dev/null 2>&1; then
+    if [ -n "$(git -C "$REPO_ROOT" status --porcelain --untracked-files=no -- . ':(exclude)appcast.xml')" ]; then
+        echo "Error: the working tree has uncommitted changes:" >&2
+        git -C "$REPO_ROOT" status --short --untracked-files=no -- . ':(exclude)appcast.xml' >&2
+        echo "Commit or stash them, or pass --allow-dirty to override." >&2
+        exit 1
+    fi
 fi
 
 # 4. Define release artifact paths
@@ -150,22 +175,26 @@ else
     SIGN_UPDATE_BIN="$(find "$REPO_ROOT/.build" -name "sign_update" -type f -perm +111 2>/dev/null | grep -v "\.dSYM" | head -n 1 || true)"
 fi
 
+# An unsigned or placeholder-signed appcast entry would make every installed copy reject the update (or,
+# worse, look valid while being unverifiable), so a signing failure aborts the release instead of continuing.
 ED_SIGNATURE=""
-if [ -n "$SIGN_UPDATE_BIN" ] && [ -x "$SIGN_UPDATE_BIN" ]; then
-    echo "• Found Sparkle sign_update tool at: $SIGN_UPDATE_BIN"
-    echo "• Signing $ZIP_NAME with EdDSA private key..."
-    ED_SIGNATURE="$("$SIGN_UPDATE_BIN" -p "$ZIP_PATH" 2>/dev/null || true)"
-    if [ -z "$ED_SIGNATURE" ]; then
-        echo "⚠️  Warning: Sparkle sign_update failed (no ed25519 private key found in Keychain)." >&2
-        echo "   Please run '$REPO_ROOT/.build/artifacts/sparkle/Sparkle/bin/generate_keys' to generate your keypair." >&2
-        ED_SIGNATURE="PLACEHOLDER_ED25519_SIGNATURE"
-    else
-        echo "• Successfully signed release archive with EdDSA key."
-    fi
-else
-    echo "⚠️  Warning: Sparkle sign_update tool not found in .build/." >&2
-    ED_SIGNATURE="PLACEHOLDER_ED25519_SIGNATURE"
+if [ -z "$SIGN_UPDATE_BIN" ] || [ ! -x "$SIGN_UPDATE_BIN" ]; then
+    echo "Error: Sparkle sign_update tool not found in .build/." >&2
+    echo "Run 'swift build' once so SwiftPM fetches Sparkle, then retry." >&2
+    exit 1
 fi
+
+echo "• Found Sparkle sign_update tool at: $SIGN_UPDATE_BIN"
+echo "• Signing $ZIP_NAME with EdDSA private key..."
+ED_SIGNATURE="$("$SIGN_UPDATE_BIN" -p "$ZIP_PATH" 2>/dev/null || true)"
+if [ -z "$ED_SIGNATURE" ]; then
+    echo "Error: Sparkle sign_update failed (no ed25519 private key found in Keychain)." >&2
+    echo "Run '$(dirname "$SIGN_UPDATE_BIN")/generate_keys' only if this is a brand-new project;" >&2
+    echo "generating a new key would stop existing installs from verifying updates." >&2
+    exit 1
+fi
+echo "• Successfully signed release archive with EdDSA key."
+
 
 # 11. Generate or update appcast.xml at repository root
 APPCAST_PATH="$REPO_ROOT/appcast.xml"

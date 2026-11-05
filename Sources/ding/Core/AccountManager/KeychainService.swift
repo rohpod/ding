@@ -101,14 +101,32 @@ public final class KeychainService: KeychainServiceProtocol, Sendable {
         return isDev ? "com.ding.mac.v3.imap-app-password.dev" : "com.ding.mac.v3.imap-app-password"
     }
 
+    /// Service names used by earlier releases, searched when a password is missing under the current name.
+    ///
+    /// v0.4.0 stored passwords under the `v2` name and v0.4.1 moved to `v3` without migrating them.
+    /// Development builds never shipped under these names, so they have nothing to migrate.
+    public static var defaultLegacyServiceNames: [String] {
+        let isDev = Bundle.main.infoDictionary?["DingIsDevBuild"] as? Bool ?? false
+        return isDev ? [] : ["com.ding.mac.v2.imap-app-password", "com.ding.mac.imap-app-password"]
+    }
+
     /// The Keychain service attribute name identifying ding IMAP credentials.
     public let serviceName: String
 
+    /// Earlier service names whose items are migrated forward on first access.
+    public let legacyServiceNames: [String]
+
     /// Initializes a Keychain service instance.
     ///
-    /// - Parameter serviceName: The service identifier. Defaults to `KeychainService.defaultServiceName`.
-    public init(serviceName: String = KeychainService.defaultServiceName) {
+    /// - Parameters:
+    ///   - serviceName: The service identifier. Defaults to `KeychainService.defaultServiceName`.
+    ///   - legacyServiceNames: Earlier identifiers to migrate from. Defaults to `KeychainService.defaultLegacyServiceNames`.
+    public init(
+        serviceName: String = KeychainService.defaultServiceName,
+        legacyServiceNames: [String] = KeychainService.defaultLegacyServiceNames
+    ) {
         self.serviceName = serviceName
+        self.legacyServiceNames = legacyServiceNames
     }
 
     /// Stores a new app password in the Keychain.
@@ -148,9 +166,30 @@ public final class KeychainService: KeychainServiceProtocol, Sendable {
     public func retrievePassword(forAccountID id: UUID) throws -> String {
         Self.logger.debug("Retrieving password from Keychain for account: \(id.uuidString, privacy: .public)")
 
+        do {
+            return try readPassword(service: serviceName, forAccountID: id)
+        } catch KeychainError.itemNotFound {
+            // Not found under the current name: look for an item written by an earlier release.
+            for legacyName in legacyServiceNames where legacyName != serviceName {
+                guard let password = try? readPassword(service: legacyName, forAccountID: id) else { continue }
+                Self.logger.info("Migrating Keychain item for account \(id.uuidString, privacy: .public) from a legacy service name")
+                do {
+                    try store(password: password, forAccountID: id)
+                    deleteLegacyItem(service: legacyName, forAccountID: id)
+                } catch {
+                    // The password is still usable this session; migration will be retried on the next launch.
+                    Self.logger.warning("Could not copy legacy Keychain item forward for account \(id.uuidString, privacy: .public): \(error.localizedDescription, privacy: .public)")
+                }
+                return password
+            }
+            throw KeychainError.itemNotFound
+        }
+    }
+
+    private func readPassword(service: String, forAccountID id: UUID) throws -> String {
         let query: [String: Any] = [
             kSecClass as String: kSecClassGenericPassword,
-            kSecAttrService as String: serviceName,
+            kSecAttrService as String: service,
             kSecAttrAccount as String: id.uuidString,
             kSecReturnData as String: true,
             kSecMatchLimit as String: kSecMatchLimitOne
@@ -178,6 +217,15 @@ public final class KeychainService: KeychainServiceProtocol, Sendable {
         }
 
         return password
+    }
+
+    private func deleteLegacyItem(service: String, forAccountID id: UUID) {
+        let query: [String: Any] = [
+            kSecClass as String: kSecClassGenericPassword,
+            kSecAttrService as String: service,
+            kSecAttrAccount as String: id.uuidString
+        ]
+        SecItemDelete(query as CFDictionary)
     }
 
     /// Updates an existing password or stores it if it does not yet exist.

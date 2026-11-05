@@ -9,6 +9,12 @@ public enum NotificationUserInfoKey {
 
     /// The array of string representations of the message IMAP unique identifiers (UIDs).
     public static let messageUIDs = "messageUIDs"
+
+    /// Distinguishes notification purposes; absent for ordinary new-mail notifications.
+    public static let kind = "kind"
+
+    /// The `kind` value for notifications asking the user to update an account's app password.
+    public static let reauthenticationKind = "reauthentication"
 }
 
 /// Pure helper responsible for formatting and constructing `UNMutableNotificationContent`
@@ -104,6 +110,30 @@ public struct NotificationContentBuilder {
             NotificationUserInfoKey.messageUIDs: uids
         ]
 
+        return content
+    }
+
+    /// Constructs the payload telling the user that an account was signed out and needs a new app password.
+    public static func buildReauthenticationContent(account: Account) -> UNMutableNotificationContent {
+        let content = UNMutableNotificationContent()
+        content.title = account.displayName.replacingOccurrences(of: "\n", with: " ").trimmingCharacters(in: .whitespacesAndNewlines)
+        content.body = "ding can't sign in to this account, so new mail won't be announced. Click to enter a new app password."
+        content.sound = .default
+        content.userInfo = [
+            NotificationUserInfoKey.accountID: account.id.uuidString,
+            NotificationUserInfoKey.kind: NotificationUserInfoKey.reauthenticationKind
+        ]
+        return content
+    }
+
+    /// Constructs the payload reporting that a manual check could not reach one or more accounts.
+    public static func buildCheckFailedContent(failedCount: Int) -> UNMutableNotificationContent {
+        let content = UNMutableNotificationContent()
+        content.title = "Couldn't check mail"
+        content.body = failedCount == 1
+            ? "ding couldn't reach 1 account. Check your connection and try again."
+            : "ding couldn't reach \(failedCount) accounts. Check your connection and try again."
+        content.sound = .default
         return content
     }
 
@@ -205,9 +235,45 @@ public final class NotificationService {
 
         do {
             try await UNUserNotificationCenter.current().add(request)
-            Self.logger.info("Sent notification for \(event.messages.count, privacy: .public) new message(s) in \(account.displayName, privacy: .public)")
+            Self.logger.info("Sent notification for \(event.messages.count, privacy: .public) new message(s) for account \(account.id.uuidString, privacy: .public)")
         } catch {
             Self.logger.error("Failed to deliver notification for account \(account.id.uuidString, privacy: .public): \(error.localizedDescription, privacy: .public)")
+        }
+    }
+
+    /// Builds and delivers a notification asking the user to re-enter an account's app password.
+    public func sendReauthenticationNeededNotification(account: Account) async {
+        guard NotificationPermissionManager.isRunningInAppBundle else {
+            Self.logger.warning("Running outside an .app bundle; skipping re-authentication notification for account \(account.id.uuidString, privacy: .public)")
+            return
+        }
+
+        let content = NotificationContentBuilder.buildReauthenticationContent(account: account)
+        let identifier = "ding.mail.reauth.\(account.id.uuidString)"
+        let request = UNNotificationRequest(identifier: identifier, content: content, trigger: nil)
+
+        do {
+            try await UNUserNotificationCenter.current().add(request)
+            Self.logger.info("Sent re-authentication notification for account \(account.id.uuidString, privacy: .public)")
+        } catch {
+            Self.logger.error("Failed to deliver re-authentication notification for account \(account.id.uuidString, privacy: .public): \(error.localizedDescription, privacy: .public)")
+        }
+    }
+
+    /// Builds and delivers a notification reporting that a manual check failed.
+    public func sendCheckFailedNotification(failedCount: Int) async {
+        guard NotificationPermissionManager.isRunningInAppBundle else {
+            Self.logger.warning("Running outside an .app bundle; skipping check-failed notification delivery.")
+            return
+        }
+
+        let content = NotificationContentBuilder.buildCheckFailedContent(failedCount: failedCount)
+        let request = UNNotificationRequest(identifier: "ding.mail.checkFailed.\(UUID().uuidString)", content: content, trigger: nil)
+
+        do {
+            try await UNUserNotificationCenter.current().add(request)
+        } catch {
+            Self.logger.error("Failed to deliver check-failed notification: \(error.localizedDescription, privacy: .public)")
         }
     }
 
@@ -247,7 +313,7 @@ public final class NotificationService {
 
         do {
             try await UNUserNotificationCenter.current().add(request)
-            Self.logger.info("Sent unread notification for \(unreadCount, privacy: .public) unread email(s) in \(account.displayName, privacy: .public)")
+            Self.logger.info("Sent unread notification for \(unreadCount, privacy: .public) unread email(s) for account \(account.id.uuidString, privacy: .public)")
         } catch {
             Self.logger.error("Failed to deliver unread notification for account \(account.id.uuidString, privacy: .public): \(error.localizedDescription, privacy: .public)")
         }

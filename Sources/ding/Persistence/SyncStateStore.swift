@@ -67,8 +67,18 @@ public protocol SyncStateStoreProtocol: Sendable {
 
 /// Manages serialization and deserialization of account sync states to `sync_state.json`
 /// in the user's Application Support directory.
+///
+/// ## Concurrency
+/// Every account worker persists its own state into the same file. Each read-modify-write is serialized
+/// by `lock`, so concurrent updates from different accounts can no longer overwrite one another. Production code
+/// must share `SyncStateStore.shared`: a lock only protects callers that use the same instance.
 public final class SyncStateStore: SyncStateStoreProtocol, Sendable {
     private static let logger = Logger(subsystem: DingLog.subsystem, category: "SyncStateStore")
+
+    /// The process-wide store used by workers and the account manager.
+    public static let shared = SyncStateStore()
+
+    private let lock = NSLock()
 
     /// The resolved URL of the sync state JSON file.
     public let fileURL: URL
@@ -93,6 +103,12 @@ public final class SyncStateStore: SyncStateStoreProtocol, Sendable {
     ///
     /// If the file does not yet exist (such as on a fresh installation), an empty array is returned.
     public func load() throws -> [SyncState] {
+        lock.lock()
+        defer { lock.unlock() }
+        return try loadLocked()
+    }
+
+    private func loadLocked() throws -> [SyncState] {
         let path = fileURL.path
         guard FileManager.default.fileExists(atPath: path) else {
             Self.logger.info("No existing sync state file found at \(path, privacy: .public); returning empty list.")
@@ -119,13 +135,27 @@ public final class SyncStateStore: SyncStateStoreProtocol, Sendable {
             Self.logger.info("Successfully loaded \(states.count) sync states from disk.")
             return states
         } catch {
-            Self.logger.error("Failed to decode sync states JSON: \(error.localizedDescription, privacy: .public)")
-            throw SyncStateStoreError.decodingFailed(error)
+            // Sync state is rebuildable (workers re-establish a baseline), so a corrupt file must not wedge
+            // every worker in a retry loop. Preserve the bad file and start fresh.
+            Self.logger.error("Failed to decode sync states JSON: \(error.localizedDescription, privacy: .public). Setting it aside and starting fresh.")
+            do {
+                _ = try FileQuarantine.quarantine(fileAt: fileURL)
+            } catch let moveError {
+                Self.logger.error("Failed to set aside corrupt sync state file: \(moveError.localizedDescription, privacy: .public)")
+                throw SyncStateStoreError.decodingFailed(error)
+            }
+            return []
         }
     }
 
     /// Saves sync states to disk atomically.
     public func save(_ states: [SyncState]) throws {
+        lock.lock()
+        defer { lock.unlock() }
+        try saveLocked(states)
+    }
+
+    private func saveLocked(_ states: [SyncState]) throws {
         let parentDirectory = fileURL.deletingLastPathComponent()
 
         do {
@@ -164,23 +194,27 @@ public final class SyncStateStore: SyncStateStoreProtocol, Sendable {
 
     /// Inserts or updates the persisted sync state for a single account.
     public func updateState(_ state: SyncState) throws {
-        var states = try load()
+        lock.lock()
+        defer { lock.unlock() }
+        var states = try loadLocked()
         if let index = states.firstIndex(where: { $0.accountID == state.accountID }) {
             states[index] = state
         } else {
             states.append(state)
         }
-        try save(states)
+        try saveLocked(states)
     }
 
     /// Removes the persisted sync state for a single account, if present.
     public func removeState(forAccountID id: UUID) throws {
-        var states = try load()
+        lock.lock()
+        defer { lock.unlock() }
+        var states = try loadLocked()
         guard let index = states.firstIndex(where: { $0.accountID == id }) else {
             return
         }
         states.remove(at: index)
-        try save(states)
+        try saveLocked(states)
         Self.logger.info("Successfully removed sync state for account \(id.uuidString, privacy: .public)")
     }
 }

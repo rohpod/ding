@@ -11,18 +11,14 @@ struct AboutSettingsView: View {
     private static let repoURL = URL(string: "https://github.com/rohpod/ding")!
     private static let licenseURL = URL(string: "https://github.com/rohpod/ding/blob/main/LICENSE")!
 
-    private static let appIcon: NSImage? = {
-        if let iconURL = Bundle.main.url(forResource: "AppIcon", withExtension: "png"),
-           let nsImage = NSImage(contentsOf: iconURL) {
-            return nsImage
-        } else if let icon = NSImage(named: NSImage.applicationIconName) {
-            return icon
-        }
-        return nil
-    }()
+    /// The app icon from the bundle's `.icns`. Resolved per view rather than cached statically so the image is
+    /// released along with the Settings window.
+    private var appIcon: NSImage? {
+        NSImage(named: NSImage.applicationIconName)
+    }
 
     private var appVersion: String {
-        Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "0.4.0"
+        Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "unknown"
     }
 
     var body: some View {
@@ -30,7 +26,7 @@ struct AboutSettingsView: View {
             // MARK: - App Identity Section
             Section {
                 HStack(alignment: .center, spacing: 16) {
-                    if let icon = Self.appIcon {
+                    if let icon = appIcon {
                         Image(nsImage: icon)
                             .resizable()
                             .aspectRatio(contentMode: .fit)
@@ -91,7 +87,7 @@ struct AboutSettingsView: View {
 
             // MARK: - Acknowledgements Section
             Section("Acknowledgements") {
-                Text("Built with Apple's SwiftNIO and swift-nio-imap (Apache 2.0).")
+                Text("Built with Apple's SwiftNIO, swift-nio-imap and swift-nio-ssl (Apache 2.0; includes BoringSSL), Sparkle (MIT) and KeyboardShortcuts by Sindre Sorhus (MIT).")
                     .font(.caption)
                     .foregroundColor(.secondary)
                     .fixedSize(horizontal: false, vertical: true)

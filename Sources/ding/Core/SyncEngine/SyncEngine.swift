@@ -3,6 +3,18 @@ import Foundation
 import KeyboardShortcuts
 import os
 
+/// Types of notifications generated as a result of manual mail checking.
+public enum ManualCheckNotification: Equatable, Sendable {
+    /// Zero unread emails detected across checked accounts.
+    case zeroUnread
+
+    /// Positive unread email count detected for a specific account.
+    case accountUnread(account: Account, count: Int)
+
+    /// One or more accounts could not be checked (offline, server error, rejected credentials).
+    case checkFailed(accountCount: Int)
+}
+
 /// The top-level coordinator managing per-account synchronization workers.
 ///
 /// ## Concurrency & Actor Isolation Architecture
@@ -19,15 +31,6 @@ import os
 ///    Network I/O, socket reading, IDLE event handling, and exponential backoff timing run concurrently
 ///    in background tasks, preventing network delays or stalls on one account from blocking other accounts
 ///    or freezing the main application UI.
-/// Types of notifications generated as a result of manual mail checking.
-public enum ManualCheckNotification: Equatable, Sendable {
-    /// Zero unread emails detected across checked accounts.
-    case zeroUnread
-
-    /// Positive unread email count detected for a specific account.
-    case accountUnread(account: Account, count: Int)
-}
-
 @MainActor
 public final class SyncEngine: ObservableObject {
     nonisolated private static let logger = Logger(subsystem: DingLog.subsystem, category: "SyncEngine")
@@ -36,7 +39,7 @@ public final class SyncEngine: ObservableObject {
     public static let shared = SyncEngine()
 
     /// Factory type responsible for constructing `AccountSyncWorker` instances (injectable for unit testing).
-    public typealias WorkerFactory = @Sendable (Account, @escaping @Sendable (NewMailEvent) -> Void) -> AccountSyncWorker
+    public typealias WorkerFactory = @MainActor @Sendable (Account, @escaping @Sendable (NewMailEvent) -> Void) -> AccountSyncWorker
 
     /// Callback invoked whenever any managed account worker detects new mail.
     public var onNewMailDetected: ((NewMailEvent) -> Void)?
@@ -50,6 +53,11 @@ public final class SyncEngine: ObservableObject {
     /// Indicates whether the sync engine is active.
     @Published public private(set) var isRunning: Bool = false
 
+    /// Accounts whose credentials were rejected and that need a new app password before syncing can resume.
+    public var accountsNeedingAttention: [Account] {
+        accountManager.accounts.filter { $0.needsReauthentication }
+    }
+
     /// The list of configured accounts that have manual checking enabled.
     public var manualCheckAccounts: [Account] {
         accountManager.accounts.filter { $0.includeInManualCheck }
@@ -59,11 +67,22 @@ public final class SyncEngine: ObservableObject {
     private let appPreferences: AppPreferences
     private let notificationService: NotificationService
     private let workerFactory: WorkerFactory
+    private let connectivityMonitor: ConnectivityMonitor
     private var cancellables = Set<AnyCancellable>()
     private var accountObservation: AnyCancellable?
     private var eventContinuations: [UUID: AsyncStream<NewMailEvent>.Continuation] = [:]
     private var registeredShortcutAccountIDs = Set<UUID>()
     private var restartTasks: [UUID: Task<Void, Never>] = [:]
+
+    /// The global default frequency as last observed. Tracked here (rather than re-read from `appPreferences`)
+    /// because `@Published` publishes in `willSet`, before the stored property holds the new value.
+    private var currentDefaultFrequency: SyncFrequency
+
+    /// The effective frequency each live worker was created with, used to detect when a restart is needed.
+    private var resolvedFrequencies: [UUID: SyncFrequency] = [:]
+
+    /// The last observed `needsReauthentication` flag per account, used to detect a re-authentication.
+    private var lastReauthFlags: [UUID: Bool] = [:]
 
     /// Initializes a new sync engine coordinator.
     ///
@@ -71,22 +90,26 @@ public final class SyncEngine: ObservableObject {
     ///   - accountManager: Account store manager to observe. Defaults to `AccountManager.shared`.
     ///   - appPreferences: Global preferences store. Defaults to `AppPreferences.shared`.
     ///   - notificationService: Notification delivery service. Defaults to `NotificationService.shared`.
+    ///   - connectivityMonitor: Sleep/wake and network change detector. Defaults to a live monitor.
     ///   - workerFactory: Factory closure for generating account workers (injected in unit tests).
-    public init(
+    init(
         accountManager: AccountManager = .shared,
         appPreferences: AppPreferences = .shared,
         notificationService: NotificationService = .shared,
+        connectivityMonitor: ConnectivityMonitor? = nil,
         workerFactory: WorkerFactory? = nil
     ) {
+        self.connectivityMonitor = connectivityMonitor ?? ConnectivityMonitor()
         self.accountManager = accountManager
         self.appPreferences = appPreferences
         self.notificationService = notificationService
-        let defaultFrequency = appPreferences.defaultSyncFrequency
+        self.currentDefaultFrequency = appPreferences.defaultSyncFrequency
 
-        self.workerFactory = workerFactory ?? { account, onNewMail in
+        self.workerFactory = workerFactory ?? { [appPreferences] account, onNewMail in
+            // Read at creation time so workers started after a settings change use the current default.
             AccountSyncWorker(
                 account: account,
-                defaultSyncFrequency: defaultFrequency,
+                defaultSyncFrequency: appPreferences.defaultSyncFrequency,
                 onNewMail: onNewMail
             )
         }
@@ -101,6 +124,12 @@ public final class SyncEngine: ObservableObject {
         guard !isRunning else { return }
         isRunning = true
         Self.logger.info("Starting SyncEngine with \(self.accountManager.accounts.count, privacy: .public) account(s)")
+
+        // Reconnect promptly after sleep or a network change
+        connectivityMonitor.onReconnectNeeded = { [weak self] in
+            self?.reconnectAllWorkers()
+        }
+        connectivityMonitor.start()
 
         // Register global shortcut listener
         KeyboardShortcuts.onKeyUp(for: .checkAllMail) { [weak self] in
@@ -119,6 +148,16 @@ public final class SyncEngine: ObservableObject {
                 self?.syncWorkers(with: updatedAccounts)
             }
             .store(in: &cancellables)
+
+        // Re-evaluate workers when the global default frequency changes
+        appPreferences.$defaultSyncFrequency
+            .dropFirst()
+            .sink { [weak self] newDefault in
+                guard let self else { return }
+                self.currentDefaultFrequency = newDefault
+                self.syncWorkers(with: self.accountManager.accounts)
+            }
+            .store(in: &cancellables)
     }
 
     /// Stops all account sync workers and cancels subscriptions.
@@ -128,10 +167,13 @@ public final class SyncEngine: ObservableObject {
         Self.logger.info("Stopping SyncEngine and all child workers")
 
         cancellables.removeAll()
+        connectivityMonitor.stop()
 
         KeyboardShortcuts.disable(.checkAllMail)
+        KeyboardShortcuts.removeHandler(for: .checkAllMail)
         for id in registeredShortcutAccountIDs {
             KeyboardShortcuts.disable(.checkMail(accountID: id))
+            KeyboardShortcuts.removeHandler(for: .checkMail(accountID: id))
         }
         registeredShortcutAccountIDs.removeAll()
 
@@ -147,6 +189,8 @@ public final class SyncEngine: ObservableObject {
             Self.logger.debug("Tore down worker for account: \(id.uuidString, privacy: .public)")
         }
         workers.removeAll()
+        resolvedFrequencies.removeAll()
+        lastReauthFlags.removeAll()
 
         for continuation in eventContinuations.values {
             continuation.finish()
@@ -163,6 +207,16 @@ public final class SyncEngine: ObservableObject {
                 Task { @MainActor [weak self] in
                     self?.eventContinuations.removeValue(forKey: id)
                 }
+            }
+        }
+    }
+
+    /// Asks every worker to drop its connection and reconnect immediately.
+    func reconnectAllWorkers() {
+        Self.logger.info("Reconnecting \(self.workers.count, privacy: .public) worker(s) after wake or network change")
+        for worker in workers.values {
+            Task {
+                await worker.reconnectNow()
             }
         }
     }
@@ -195,6 +249,7 @@ public final class SyncEngine: ObservableObject {
             }
         } catch {
             Self.logger.error("Failed to check unread count for account \(accountID.uuidString, privacy: .public): \(error.localizedDescription, privacy: .public)")
+            await deliverCheckFailedNotification(failedCount: 1)
         }
     }
 
@@ -213,6 +268,7 @@ public final class SyncEngine: ObservableObject {
         }
 
         var results: [(account: Account, unreadCount: Int)] = []
+        var failedCount = 0
 
         await withTaskGroup(of: (Account, Int)?.self) { group in
             for account in eligibleAccounts {
@@ -232,19 +288,28 @@ public final class SyncEngine: ObservableObject {
             for await result in group {
                 if let result = result {
                     results.append(result)
+                } else {
+                    failedCount += 1
                 }
             }
         }
 
+        if failedCount > 0 {
+            await deliverCheckFailedNotification(failedCount: failedCount)
+        }
+
         guard !results.isEmpty else {
-            Self.logger.warning("All manual check queries failed or yielded no results; skipping notifications")
+            Self.logger.warning("All manual check queries failed or yielded no results; skipping unread notifications")
             return
         }
 
         let totalUnread = results.reduce(0) { $0 + $1.unreadCount }
 
         if totalUnread == 0 {
-            await deliverZeroUnreadNotification()
+            // Only claim an empty inbox when every account was actually checked.
+            if failedCount == 0 {
+                await deliverZeroUnreadNotification()
+            }
         } else {
             for result in results where result.unreadCount > 0 {
                 await deliverAccountUnreadNotification(account: result.account, count: result.unreadCount)
@@ -258,13 +323,23 @@ public final class SyncEngine: ObservableObject {
         await notificationService.sendZeroUnreadNotification()
     }
 
+    private func deliverCheckFailedNotification(failedCount: Int) async {
+        Self.logger.info("Delivering check-failed notification for \(failedCount, privacy: .public) account(s)")
+        onManualCheckNotification?(.checkFailed(accountCount: failedCount))
+        await notificationService.sendCheckFailedNotification(failedCount: failedCount)
+    }
+
     private func deliverAccountUnreadNotification(account: Account, count: Int) async {
-        Self.logger.info("Delivering unread notification for \(account.displayName, privacy: .public): \(count, privacy: .public)")
+        Self.logger.info("Delivering unread notification for account \(account.id.uuidString, privacy: .public): \(count, privacy: .public)")
         onManualCheckNotification?(.accountUnread(account: account, count: count))
         await notificationService.sendAccountUnreadNotification(account: account, unreadCount: count)
     }
 
     // MARK: - Account Worker Synchronization
+
+    private func effectiveFrequency(for account: Account) -> SyncFrequency {
+        account.syncFrequency == .useDefault ? currentDefaultFrequency : account.syncFrequency
+    }
 
     private func syncWorkers(with accounts: [Account]) {
         guard isRunning else { return }
@@ -275,6 +350,8 @@ public final class SyncEngine: ObservableObject {
         let removedIDs = existingIDs.subtracting(currentIDs)
         for id in removedIDs {
             restartTasks.removeValue(forKey: id)?.cancel()
+            resolvedFrequencies.removeValue(forKey: id)
+            lastReauthFlags.removeValue(forKey: id)
             if let worker = workers.removeValue(forKey: id) {
                 Self.logger.info("Removing worker for deleted account: \(id.uuidString, privacy: .public)")
                 Task {
@@ -285,6 +362,7 @@ public final class SyncEngine: ObservableObject {
 
         let removedShortcutIDs = registeredShortcutAccountIDs.subtracting(currentIDs)
         for id in removedShortcutIDs {
+            KeyboardShortcuts.removeHandler(for: .checkMail(accountID: id))
             KeyboardShortcuts.disable(.checkMail(accountID: id))
             KeyboardShortcuts.reset(.checkMail(accountID: id))
             registeredShortcutAccountIDs.remove(id)
@@ -293,32 +371,30 @@ public final class SyncEngine: ObservableObject {
 
         // 2. Add or update workers
         for account in accounts {
-            if let existingWorker = workers[account.id] {
-                // If frequency changed, restart worker with updated settings
-                if existingWorker.account.syncFrequency != account.syncFrequency {
-                    Self.logger.info("Scheduling restart for account with changed frequency: \(account.id.uuidString, privacy: .public)")
-                    let previousRestart = restartTasks[account.id]
-                    restartTasks[account.id] = Task { [weak self] in
-                        previousRestart?.cancel()
-                        _ = await previousRestart?.result
-                        guard let self = self, self.isRunning else { return }
-                        guard let currentWorker = self.workers[account.id] else { return }
-                        let latestAccount = self.accountManager.accounts.first(where: { $0.id == account.id }) ?? account
-                        if currentWorker.account.syncFrequency != latestAccount.syncFrequency {
-                            await currentWorker.stop()
-                            guard !Task.isCancelled, self.isRunning else { return }
-                            guard self.accountManager.accounts.contains(where: { $0.id == account.id }) else { return }
-                            let newWorker = self.createWorker(for: latestAccount)
-                            self.workers[account.id] = newWorker
-                            await newWorker.start()
-                        }
-                        self.restartTasks.removeValue(forKey: account.id)
-                    }
+            if workers[account.id] != nil {
+                let effective = effectiveFrequency(for: account)
+                let wasFlagged = lastReauthFlags[account.id] ?? false
+                lastReauthFlags[account.id] = account.needsReauthentication
+
+                if !wasFlagged && account.needsReauthentication {
+                    // Without this the only sign of a halted account is a banner inside Settings.
+                    Task { await notificationService.sendReauthenticationNeededNotification(account: account) }
+                }
+
+                if resolvedFrequencies[account.id] != effective {
+                    Self.logger.info("Scheduling restart for account with changed effective frequency: \(account.id.uuidString, privacy: .public)")
+                    scheduleRestart(forAccountID: account.id, onlyIfStopped: false)
+                } else if wasFlagged && !account.needsReauthentication {
+                    // A halted worker never restarts on its own, so resume it once credentials are fixed.
+                    Self.logger.info("Account re-authenticated; resuming worker if halted: \(account.id.uuidString, privacy: .public)")
+                    scheduleRestart(forAccountID: account.id, onlyIfStopped: true)
                 }
             } else {
                 Self.logger.info("Creating worker for added account: \(account.id.uuidString, privacy: .public)")
                 let worker = createWorker(for: account)
                 workers[account.id] = worker
+                resolvedFrequencies[account.id] = effectiveFrequency(for: account)
+                lastReauthFlags[account.id] = account.needsReauthentication
                 Task {
                     await worker.start()
                 }
@@ -335,6 +411,33 @@ public final class SyncEngine: ObservableObject {
                 registeredShortcutAccountIDs.insert(accountID)
                 Self.logger.info("Registered shortcut listener for account: \(accountID.uuidString, privacy: .public)")
             }
+        }
+    }
+
+    /// Replaces an account's worker with a fresh one built from the latest account state.
+    ///
+    /// - Parameter onlyIfStopped: When `true`, the restart is skipped if the current worker is still running
+    ///   (for example because it already recovered by itself).
+    private func scheduleRestart(forAccountID id: UUID, onlyIfStopped: Bool) {
+        let previousRestart = restartTasks[id]
+        restartTasks[id] = Task { [weak self] in
+            previousRestart?.cancel()
+            _ = await previousRestart?.result
+            guard let self = self, self.isRunning else { return }
+            guard let currentWorker = self.workers[id] else { return }
+            if onlyIfStopped, await currentWorker.active { return }
+
+            await currentWorker.stop()
+            guard !Task.isCancelled, self.isRunning else { return }
+
+            // Read the account only after the (possibly slow) stop so a change made meanwhile is not lost.
+            guard let latestAccount = self.accountManager.accounts.first(where: { $0.id == id }) else { return }
+            let newWorker = self.createWorker(for: latestAccount)
+            self.workers[id] = newWorker
+            self.resolvedFrequencies[id] = self.effectiveFrequency(for: latestAccount)
+            self.lastReauthFlags[id] = latestAccount.needsReauthentication
+            await newWorker.start()
+            self.restartTasks.removeValue(forKey: id)
         }
     }
 
