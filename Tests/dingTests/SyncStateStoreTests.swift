@@ -129,4 +129,36 @@ final class SyncStateStoreTests: XCTestCase {
         XCTAssertNoThrow(try store.removeState(forAccountID: UUID()))
         XCTAssertEqual(try store.load().count, 1)
     }
+
+    func testCorruptFileIsSetAsideAndTreatedAsEmpty() throws {
+        try FileManager.default.createDirectory(at: temporaryDirectoryURL, withIntermediateDirectories: true)
+        let corrupt = Data("garbage".utf8)
+        try corrupt.write(to: testFileURL)
+
+        let store = SyncStateStore(fileURL: testFileURL)
+        XCTAssertEqual(try store.load(), [], "A corrupt sync state file must not wedge workers")
+        XCTAssertFalse(FileManager.default.fileExists(atPath: testFileURL.path))
+
+        let preserved = try FileManager.default.contentsOfDirectory(atPath: temporaryDirectoryURL.path)
+            .filter { $0.contains(".corrupt-") }
+        XCTAssertEqual(preserved.count, 1)
+
+        // The store is immediately usable again
+        let state = SyncState(accountID: UUID(), uidValidity: 1, lastSeenUID: 5)
+        try store.updateState(state)
+        XCTAssertEqual(try store.load(), [state])
+    }
+
+    func testConcurrentUpdatesFromDifferentAccountsAreNotLost() throws {
+        let store = SyncStateStore(fileURL: testFileURL)
+        let ids = (0..<100).map { _ in UUID() }
+
+        DispatchQueue.concurrentPerform(iterations: ids.count) { index in
+            try? store.updateState(SyncState(accountID: ids[index], uidValidity: 1, lastSeenUID: UInt32(index)))
+        }
+
+        let loaded = try store.load()
+        XCTAssertEqual(loaded.count, 100, "Concurrent read-modify-write must not drop other accounts' updates")
+        XCTAssertEqual(Set(loaded.map(\.accountID)), Set(ids))
+    }
 }

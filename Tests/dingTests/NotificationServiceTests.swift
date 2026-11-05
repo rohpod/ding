@@ -334,4 +334,24 @@ final class NotificationServiceTests: XCTestCase {
         )
         await service.send(for: event, account: account)
     }
+
+    func testReauthenticationContentIsTaggedSoClickOpensSettings() {
+        let account = Account(email: "x@gmail.com", provider: .gmail, alias: "Work")
+        let content = NotificationContentBuilder.buildReauthenticationContent(account: account)
+
+        XCTAssertEqual(content.title, "Work")
+        XCTAssertTrue(content.body.contains("app password"))
+        XCTAssertEqual(content.userInfo[NotificationUserInfoKey.accountID] as? String, account.id.uuidString)
+        XCTAssertEqual(content.userInfo[NotificationUserInfoKey.kind] as? String, NotificationUserInfoKey.reauthenticationKind)
+
+        let ordinary = NotificationContentBuilder.buildContent(
+            for: NewMailEvent(accountID: account.id, messages: []), account: account
+        )
+        XCTAssertNil(ordinary.userInfo[NotificationUserInfoKey.kind], "Ordinary mail notifications keep their click behaviour")
+    }
+
+    func testCheckFailedContentPluralisation() {
+        XCTAssertTrue(NotificationContentBuilder.buildCheckFailedContent(failedCount: 1).body.contains("1 account."))
+        XCTAssertTrue(NotificationContentBuilder.buildCheckFailedContent(failedCount: 3).body.contains("3 accounts"))
+    }
 }

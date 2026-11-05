@@ -25,7 +25,7 @@ ding runs quietly in the background, watches your inbox over IMAP, and notifies 
 - **Configurable notification behavior** — clicking a notification can do nothing, open your default mail app, or open the provider's webmail in your browser
 - **Menu bar only** — no Dock icon, no window cluttering your desktop
 - **Open at Login** — optional, off by default
-- **Update checking** — automatic background checks via Sparkle notify you when a new version is available; downloading and installing is manual for now (see [Updates](#updates) below)
+- **Automatic updates** — Sparkle checks for new versions in the background and can download and install them for you (configurable, see [Updates](#updates) below)
 - **Free and open source** — MIT licensed, no paid tiers, no ads, no telemetry
 
 ## Installation
@@ -43,7 +43,7 @@ ding runs quietly in the background, watches your inbox over IMAP, and notifies 
 ```bash
    xattr -cr /Applications/ding.app
 ```
-4. Launch ding. It will appear in your menu bar and open Settings automatically on first launch.
+4. Launch ding. It will appear in your menu bar; click the icon and choose **Settings…**.
 5. Add your first account in **Settings → Accounts**.
 
 > Why the extra step? Apple requires a $99/year Developer Program membership to get apps automatically trusted by macOS. As a free, community-run project, ding doesn't use one. Which means you're trusting the source code instead of an Apple certificate. Everything in this repo is open for you to audit.
@@ -94,7 +94,7 @@ OAuth (the "sign in with..." flow) requires the app to be registered and securit
 
 ding uses [swift-nio-imap](https://github.com/apple/swift-nio-imap) to speak IMAP directly. For each account:
 
-- If the server supports **IMAP IDLE** and you've selected "Always," ding holds one lightweight persistent connection and gets notified the instant new mail arrives without any polling delay.
+- If the server supports **IMAP IDLE** and you've selected "Always," ding holds one lightweight persistent connection and gets notified the instant new mail arrives without any polling delay. After your Mac wakes from sleep or the network changes, ding reconnects automatically.
 - Otherwise, ding connects briefly at your chosen interval, checks for new messages, and disconnects. Nothing lingers between checks.
 
 New-mail detection is based on IMAP UIDs, so you won't get duplicate notifications for mail you've already seen, even across restarts.
@@ -103,7 +103,7 @@ New-mail detection is based on IMAP UIDs, so you won't get duplicate notificatio
 
 - **No server.** ding is 100% client-side — there is no backend service run by this project, and there never will be one for core functionality. Your Mac talks directly to your mail provider.
 - Credentials are stored exclusively in the macOS Keychain, never in a plaintext file, never transmitted anywhere except directly to your provider's own mail server over TLS.
-- No analytics, no telemetry, no third-party servers involved beyond your mail provider and a background check via Sparkle (against this repo's GitHub releases) to see if a new version exists. That check sends nothing about you, just asks for the latest release tag.
+- No analytics, no telemetry, no third-party servers involved beyond your mail provider and a background check via Sparkle, which downloads this repo's `appcast.xml` from GitHub to see if a new version exists. That check sends nothing about you.
 - All source code is in this repository. Nothing runs that you can't read yourself.
 
 ## Support

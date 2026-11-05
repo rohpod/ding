@@ -43,6 +43,7 @@ final class SyncEngineTests: XCTestCase {
                 return AccountSyncWorker(
                     account: account,
                     imapClient: client,
+                    manualCheckClientFactory: { client },
                     syncStateStore: syncStore,
                     passwordProvider: { _ in "pwd" },
                     sleepProvider: { _ in try await Task.sleep(nanoseconds: 10_000_000) },
@@ -77,6 +78,7 @@ final class SyncEngineTests: XCTestCase {
                 AccountSyncWorker(
                     account: account,
                     imapClient: FakeIMAPClient(),
+                    manualCheckClientFactory: { FakeIMAPClient() },
                     syncStateStore: syncStore,
                     passwordProvider: { _ in "pwd" },
                     sleepProvider: { _ in try await Task.sleep(nanoseconds: 10_000_000) },
@@ -119,6 +121,7 @@ final class SyncEngineTests: XCTestCase {
                 return AccountSyncWorker(
                     account: account,
                     imapClient: FakeIMAPClient(),
+                    manualCheckClientFactory: { FakeIMAPClient() },
                     syncStateStore: syncStore,
                     passwordProvider: { _ in "pwd" },
                     sleepProvider: { _ in try await Task.sleep(nanoseconds: 10_000_000) },
@@ -169,6 +172,7 @@ final class SyncEngineTests: XCTestCase {
                 AccountSyncWorker(
                     account: account,
                     imapClient: FakeIMAPClient(),
+                    manualCheckClientFactory: { FakeIMAPClient() },
                     syncStateStore: syncStore,
                     passwordProvider: { _ in "pwd" },
                     sleepProvider: { _ in try await Task.sleep(nanoseconds: 10_000_000) },
@@ -206,6 +210,7 @@ final class SyncEngineTests: XCTestCase {
                 let worker = AccountSyncWorker(
                     account: account,
                     imapClient: FakeIMAPClient(),
+                    manualCheckClientFactory: { FakeIMAPClient() },
                     syncStateStore: syncStore,
                     passwordProvider: { _ in "pwd" },
                     sleepProvider: { _ in try await Task.sleep(nanoseconds: 10_000_000) },
@@ -284,6 +289,7 @@ final class SyncEngineTests: XCTestCase {
                 return AccountSyncWorker(
                     account: account,
                     imapClient: client,
+                    manualCheckClientFactory: { client },
                     syncStateStore: syncStore,
                     defaultSyncFrequency: .fifteenMinutes,
                     passwordProvider: { _ in "pwd" },
@@ -397,6 +403,7 @@ final class SyncEngineTests: XCTestCase {
                 return AccountSyncWorker(
                     account: account,
                     imapClient: client,
+                    manualCheckClientFactory: { client },
                     syncStateStore: syncStore,
                     passwordProvider: { _ in "pwd" },
                     sleepProvider: { _ in try await Task.sleep(nanoseconds: 60_000_000_000) },
@@ -442,6 +449,7 @@ final class SyncEngineTests: XCTestCase {
                 return AccountSyncWorker(
                     account: account,
                     imapClient: client,
+                    manualCheckClientFactory: { client },
                     syncStateStore: syncStore,
                     passwordProvider: { _ in "pwd" },
                     sleepProvider: { _ in try await Task.sleep(nanoseconds: 60_000_000_000) },
@@ -485,6 +493,7 @@ final class SyncEngineTests: XCTestCase {
                 return AccountSyncWorker(
                     account: account,
                     imapClient: client,
+                    manualCheckClientFactory: { client },
                     syncStateStore: syncStore,
                     passwordProvider: { _ in "pwd" },
                     sleepProvider: { _ in try await Task.sleep(nanoseconds: 60_000_000_000) },
@@ -524,6 +533,7 @@ final class SyncEngineTests: XCTestCase {
                 AccountSyncWorker(
                     account: account,
                     imapClient: fakeClient,
+                    manualCheckClientFactory: { fakeClient },
                     syncStateStore: syncStore,
                     passwordProvider: { _ in "pwd" },
                     sleepProvider: { _ in try await Task.sleep(nanoseconds: 60_000_000_000) },
@@ -560,6 +570,7 @@ final class SyncEngineTests: XCTestCase {
                 AccountSyncWorker(
                     account: account,
                     imapClient: fakeClient,
+                    manualCheckClientFactory: { fakeClient },
                     syncStateStore: syncStore,
                     passwordProvider: { _ in "pwd" },
                     sleepProvider: { _ in try await Task.sleep(nanoseconds: 60_000_000_000) },
@@ -578,5 +589,217 @@ final class SyncEngineTests: XCTestCase {
         XCTAssertEqual(notifications, [.accountUnread(account: acc1, count: 11)])
 
         engine.stop()
+    }
+
+    // MARK: - Restart behaviour
+
+    @MainActor
+    func testChangingDefaultFrequencyRestartsWorkersThatUseTheDefault() async throws {
+        let defaults = UserDefaults(suiteName: "ding-engine-tests-\(UUID().uuidString)")!
+        let prefs = AppPreferences(userDefaults: defaults)
+        let manager = AccountManager(accountStore: testStore, keychainService: mockKeychain)
+        _ = try manager.addAccount(email: "default@gmail.com", provider: .gmail, appPassword: "pwd")
+        _ = try manager.addAccount(email: "explicit@fastmail.com", provider: .fastmail, appPassword: "pwd")
+        var explicit = manager.accounts[1]
+        explicit.syncFrequency = .oneMinute
+        try manager.updateAccount(explicit)
+
+        let created = LockProtected<[String]>([])
+        let syncStore = self.syncStore!
+        let engine = SyncEngine(
+            accountManager: manager,
+            appPreferences: prefs,
+            workerFactory: { account, onNewMail in
+                created.withLock { $0.append(account.email) }
+                let client = FakeIMAPClient()
+                return AccountSyncWorker(
+                    account: account,
+                    imapClient: client,
+                    manualCheckClientFactory: { client },
+                    syncStateStore: syncStore,
+                    passwordProvider: { _ in "pwd" },
+                    sleepProvider: { _ in try await Task.sleep(nanoseconds: 10_000_000) },
+                    onNewMail: onNewMail
+                )
+            }
+        )
+
+        engine.start()
+        XCTAssertEqual(created.get().count, 2)
+
+        prefs.defaultSyncFrequency = .fifteenMinutes
+
+        for _ in 0..<100 {
+            if created.get().count >= 3 { break }
+            try await Task.sleep(nanoseconds: 20_000_000)
+        }
+        try await Task.sleep(nanoseconds: 100_000_000)
+
+        XCTAssertEqual(created.get().filter { $0 == "default@gmail.com" }.count, 2, "Worker following the default must be recreated")
+        XCTAssertEqual(created.get().filter { $0 == "explicit@fastmail.com" }.count, 1, "Worker with an explicit frequency must be left alone")
+        engine.stop()
+    }
+
+    @MainActor
+    func testClearingReauthenticationFlagRestartsHaltedWorker() async throws {
+        let manager = AccountManager(accountStore: testStore, keychainService: mockKeychain)
+        let account = try manager.addAccount(email: "reauth@gmail.com", provider: .gmail, appPassword: "pwd")
+        try manager.setNeedsReauthentication(forAccountID: account.id, needsReauthentication: true)
+
+        let created = LockProtected<Int>(0)
+        let firstClient = FakeIMAPClient(loginError: .authenticationFailed)
+        let syncStore = self.syncStore!
+        let engine = SyncEngine(
+            accountManager: manager,
+            workerFactory: { account, onNewMail in
+                let attempt = created.withLock { value -> Int in value += 1; return value }
+                // The first worker is rejected by the server and halts; later ones succeed.
+                let client = attempt == 1 ? firstClient : FakeIMAPClient()
+                return AccountSyncWorker(
+                    account: account,
+                    imapClient: client,
+                    manualCheckClientFactory: { client },
+                    syncStateStore: syncStore,
+                    passwordProvider: { _ in "pwd" },
+                    reauthenticationHandler: { _ in },
+                    sleepProvider: { _ in try await Task.sleep(nanoseconds: 10_000_000) },
+                    onNewMail: onNewMail
+                )
+            }
+        )
+
+        engine.start()
+        let firstWorker = try XCTUnwrap(engine.workers[account.id])
+        for _ in 0..<100 {
+            if await firstClient.loginCallCount > 0, await !firstWorker.active { break }
+            try await Task.sleep(nanoseconds: 10_000_000)
+        }
+        let halted = await !firstWorker.active
+        XCTAssertTrue(halted, "Precondition: an auth failure must halt the worker")
+
+        try manager.updatePassword(forAccountID: account.id, newPassword: "new-password")
+        try manager.setNeedsReauthentication(forAccountID: account.id, needsReauthentication: false)
+
+        for _ in 0..<100 {
+            if created.get() >= 2 { break }
+            try await Task.sleep(nanoseconds: 20_000_000)
+        }
+        XCTAssertEqual(created.get(), 2, "Re-authenticating must replace the halted worker")
+        engine.stop()
+    }
+
+    @MainActor
+    func testClearingReauthenticationFlagLeavesRunningWorkerAlone() async throws {
+        let manager = AccountManager(accountStore: testStore, keychainService: mockKeychain)
+        let account = try manager.addAccount(email: "healthy@gmail.com", provider: .gmail, appPassword: "pwd")
+        try manager.setNeedsReauthentication(forAccountID: account.id, needsReauthentication: true)
+
+        let created = LockProtected<Int>(0)
+        let syncStore = self.syncStore!
+        let engine = SyncEngine(
+            accountManager: manager,
+            workerFactory: { account, onNewMail in
+                created.withLock { $0 += 1 }
+                let client = FakeIMAPClient()
+                return AccountSyncWorker(
+                    account: account,
+                    imapClient: client,
+                    manualCheckClientFactory: { client },
+                    syncStateStore: syncStore,
+                    passwordProvider: { _ in "pwd" },
+                    authenticationRecoveredHandler: { _ in },
+                    sleepProvider: { _ in try await Task.sleep(nanoseconds: 60_000_000_000) },
+                    onNewMail: onNewMail
+                )
+            }
+        )
+
+        engine.start()
+        try await Task.sleep(nanoseconds: 100_000_000)
+        try manager.setNeedsReauthentication(forAccountID: account.id, needsReauthentication: false)
+        try await Task.sleep(nanoseconds: 300_000_000)
+
+        XCTAssertEqual(created.get(), 1, "A worker that is still running must not be restarted")
+        engine.stop()
+    }
+
+    @MainActor
+    func testAccountsNeedingAttentionListsOnlyFlaggedAccounts() throws {
+        let manager = AccountManager(accountStore: testStore, keychainService: mockKeychain)
+        let ok = try manager.addAccount(email: "ok@gmail.com", provider: .gmail, appPassword: "pwd")
+        let bad = try manager.addAccount(email: "bad@gmail.com", provider: .gmail, appPassword: "pwd")
+        let engine = SyncEngine(accountManager: manager, workerFactory: { account, onNewMail in
+            AccountSyncWorker(account: account, imapClient: FakeIMAPClient(), manualCheckClientFactory: { FakeIMAPClient() }, onNewMail: onNewMail)
+        })
+
+        XCTAssertTrue(engine.accountsNeedingAttention.isEmpty)
+        try manager.setNeedsReauthentication(forAccountID: bad.id, needsReauthentication: true)
+        XCTAssertEqual(engine.accountsNeedingAttention.map(\.id), [bad.id])
+        XCTAssertFalse(engine.accountsNeedingAttention.contains { $0.id == ok.id })
+    }
+
+    @MainActor
+    func testCheckAllMailWithOneFailureDoesNotClaimZeroUnread() async throws {
+        let manager = AccountManager(accountStore: testStore, keychainService: mockKeychain)
+        _ = try manager.addAccount(email: "works@gmail.com", provider: .gmail, appPassword: "pwd")
+        _ = try manager.addAccount(email: "offline@fastmail.com", provider: .fastmail, appPassword: "pwd")
+
+        let syncStore = self.syncStore!
+        let engine = SyncEngine(
+            accountManager: manager,
+            workerFactory: { account, onNewMail in
+                let client = FakeIMAPClient()
+                let isBroken = account.email.contains("offline")
+                return AccountSyncWorker(
+                    account: account,
+                    imapClient: client,
+                    manualCheckClientFactory: {
+                        isBroken ? FakeIMAPClient(connectError: .connectionFailed(underlying: NSError(domain: "net", code: -1009))) : FakeIMAPClient()
+                    },
+                    syncStateStore: syncStore,
+                    passwordProvider: { _ in "pwd" },
+                    sleepProvider: { _ in try await Task.sleep(nanoseconds: 60_000_000_000) },
+                    onNewMail: onNewMail
+                )
+            }
+        )
+        var notifications: [ManualCheckNotification] = []
+        engine.onManualCheckNotification = { notifications.append($0) }
+
+        engine.start()
+        await engine.checkAllMail()
+        engine.stop()
+
+        XCTAssertFalse(notifications.contains(.zeroUnread), "An unchecked account means the inbox state is unknown")
+        XCTAssertEqual(notifications, [.checkFailed(accountCount: 1)])
+    }
+
+    @MainActor
+    func testSingleAccountCheckFailureIsReported() async throws {
+        let manager = AccountManager(accountStore: testStore, keychainService: mockKeychain)
+        let account = try manager.addAccount(email: "down@gmail.com", provider: .gmail, appPassword: "pwd")
+        let syncStore = self.syncStore!
+        let engine = SyncEngine(
+            accountManager: manager,
+            workerFactory: { account, onNewMail in
+                AccountSyncWorker(
+                    account: account,
+                    imapClient: FakeIMAPClient(),
+                    manualCheckClientFactory: { FakeIMAPClient(connectError: .timeout) },
+                    syncStateStore: syncStore,
+                    passwordProvider: { _ in "pwd" },
+                    sleepProvider: { _ in try await Task.sleep(nanoseconds: 60_000_000_000) },
+                    onNewMail: onNewMail
+                )
+            }
+        )
+        var notifications: [ManualCheckNotification] = []
+        engine.onManualCheckNotification = { notifications.append($0) }
+
+        engine.start()
+        await engine.checkMail(accountID: account.id)
+        engine.stop()
+
+        XCTAssertEqual(notifications, [.checkFailed(accountCount: 1)])
     }
 }

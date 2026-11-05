@@ -88,4 +88,16 @@ final class AccountStoreTests: XCTestCase {
             }
         }
     }
+
+    func testQuarantineMovesFileAndReturnsNewLocation() throws {
+        let testFileURL = tempDirectoryURL.appendingPathComponent("accounts.json")
+        let store = AccountStore(fileURL: testFileURL)
+        XCTAssertNil(try store.quarantineCorruptFile(), "Nothing to set aside when the file does not exist")
+
+        try FileManager.default.createDirectory(at: testFileURL.deletingLastPathComponent(), withIntermediateDirectories: true)
+        try Data("bad".utf8).write(to: testFileURL)
+        let moved = try XCTUnwrap(try store.quarantineCorruptFile())
+        XCTAssertFalse(FileManager.default.fileExists(atPath: testFileURL.path))
+        XCTAssertTrue(FileManager.default.fileExists(atPath: moved.path))
+    }
 }

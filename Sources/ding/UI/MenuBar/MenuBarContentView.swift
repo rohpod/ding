@@ -5,6 +5,16 @@ struct MenuBarContentView: View {
     @ObservedObject private var syncEngine = SyncEngine.shared
 
     var body: some View {
+        if !syncEngine.accountsNeedingAttention.isEmpty {
+            ForEach(syncEngine.accountsNeedingAttention) { account in
+                Button("⚠︎ \(account.displayName) needs a new app password…") {
+                    AppDelegate.shared?.openSettings()
+                }
+            }
+
+            Divider()
+        }
+
         Button("Check for Mail") {
             Task {
                 await syncEngine.checkAllMail()

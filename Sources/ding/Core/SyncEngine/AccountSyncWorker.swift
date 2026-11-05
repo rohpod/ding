@@ -18,8 +18,11 @@ import os
 ///    and enters `startIdle()`.
 ///    Upon receiving untagged mailbox notifications (`.newMailAvailable`), it cleanly issues `DONE` (`stopIdle()`),
 ///    fetches new messages since `lastSeenUID`, updates `SyncState`, emits a `NewMailEvent`, and resumes `IDLE`.
-///    To adhere to RFC 2177, the IDLE command is proactively refreshed every 28 minutes before the 29-minute
-///    server inactivity timeout.
+///    To adhere to RFC 2177, the IDLE command is proactively refreshed every 10 minutes, well inside the
+///    29-minute server inactivity limit. Each refresh also proves the socket is alive, because a server that
+///    never acknowledges `DONE` makes the worker reconnect.
+///    Before every (re)entry into IDLE the worker fetches anything already waiting, since servers only announce
+///    mail that arrives *during* IDLE.
 ///
 /// 2. **Polling Mode**:
 ///    Used when the effective frequency is periodic (`.oneMinute`, `.fiveMinutes`, etc.) OR when `.always`
@@ -28,11 +31,16 @@ import os
 ///    emits `NewMailEvent`, and immediately disconnects to preserve system RAM and battery life.
 ///
 /// ## Failure Resilience & Backoff
-/// Transient network errors (`.connectionFailed`, `.timeout`, `.tlsHandshakeFailed`) trigger exponential backoff
-/// starting at 5 seconds and doubling up to 300 seconds (5 minutes). Backoff resets upon the next successful sync pass.
+/// Transient failures trigger exponential backoff starting at 5 seconds and doubling up to 300 seconds (5 minutes),
+/// with up to 20% random jitter. Backoff resets only after a *complete* connect-and-fetch cycle succeeds, so a failure
+/// late in the cycle keeps backing off instead of reconnecting every few seconds.
 ///
-/// Critical credential rejection (`.authenticationFailed`) halts the sync loop immediately to prevent account lockout,
-/// sets `needsReauthentication = true` on `AccountManager`, and logs a high-priority diagnostic.
+/// An explicit credential rejection (`.authenticationFailed`) halts the sync loop immediately to prevent account
+/// lockout and sets `needsReauthentication = true`. A bare `NO`/`BAD` at login (`.loginRejected`) is ambiguous, so it
+/// halts only after several consecutive rejections, while temporary refusals (`.temporarilyUnavailable`) are retried
+/// indefinitely. A successful login clears a stale flag.
+///
+/// `reconnectNow()` lets the engine force a fresh connection after the Mac wakes or the network returns.
 public actor AccountSyncWorker {
     private static let logger = Logger(subsystem: DingLog.subsystem, category: "AccountSyncWorker")
 
@@ -40,13 +48,16 @@ public actor AccountSyncWorker {
     public let account: Account
 
     private let imapClient: any IMAPConnecting
+    private let manualCheckClientFactory: @Sendable () -> any IMAPConnecting
     private let syncStateStore: any SyncStateStoreProtocol
     private let passwordProvider: @Sendable (UUID) async throws -> String
     private let reauthenticationHandler: (@Sendable (UUID) async -> Void)?
+    private let authenticationRecoveredHandler: (@Sendable (UUID) async -> Void)?
     private let sleepProvider: @Sendable (Duration) async throws -> Void
     private let onNewMail: (@Sendable (NewMailEvent) -> Void)?
     private let defaultSyncFrequency: SyncFrequency
     private let idleRefreshDuration: Duration
+    private let backoffJitter: @Sendable () -> Double
 
     private let wakeSignal = WakeSignal()
 
@@ -54,6 +65,12 @@ public actor AccountSyncWorker {
     private var isRunning: Bool = false
     private var isFetchingNewMail: Bool = false
     private var currentRetryCount: Int = 0
+    private var consecutiveLoginRejections: Int = 0
+    private var hasClearedReauthenticationFlag: Bool = false
+
+    /// Number of back-to-back ambiguous login rejections (a bare `NO`/`BAD`) tolerated before the account is
+    /// flagged as needing a new password.
+    private static let maxConsecutiveLoginRejections = 3
     private var hasLoadedBaseline: Bool = false
     private var lastSeenUID: UInt32 = 0
     private var currentUIDValidity: UInt32 = 0
@@ -65,34 +82,22 @@ public actor AccountSyncWorker {
 
     /// Queries the current absolute unread message count for this account's inbox.
     ///
-    /// Reuses the existing connection if connected, or temporarily opens and authenticates a new connection.
-    /// Keeps this check separate from `fetchAndEmitNewMail()`, leaving baseline UID state untouched.
+    /// Always uses a short-lived, dedicated connection so a manual check can never interrupt the
+    /// sync loop's IDLE session or race with its connect/disconnect cycle. Leaves baseline UID state untouched.
     ///
     /// - Returns: The total unread email count in INBOX.
     /// - Throws: An error if connection, authentication, or query fails.
     public func checkUnreadCount() async throws -> Int {
-        let wasConnected = await imapClient.isConnected
-        if !wasConnected {
-            do {
-                let password = try await passwordProvider(account.id)
-                try await imapClient.connect(host: account.provider.imapHost, port: account.provider.imapPort)
-                try await imapClient.login(email: account.email, password: password)
-            } catch {
-                await imapClient.disconnect()
-                throw error
-            }
-        }
-
+        let client = manualCheckClientFactory()
         do {
-            let count = try await imapClient.fetchUnreadCount()
-            if !wasConnected {
-                await imapClient.disconnect()
-            }
+            let password = try await passwordProvider(account.id)
+            try await client.connect(host: account.provider.imapHost, port: account.provider.imapPort)
+            try await client.login(email: account.email, password: password)
+            let count = try await client.fetchUnreadCount()
+            await client.disconnect()
             return count
         } catch {
-            if !wasConnected {
-                await imapClient.disconnect()
-            }
+            await client.disconnect()
             throw error
         }
     }
@@ -102,27 +107,34 @@ public actor AccountSyncWorker {
     /// - Parameters:
     ///   - account: The mail account to watch.
     ///   - imapClient: The network client conforming to `IMAPConnecting`. Defaults to a new `NIOIMAPClient()`.
-    ///   - syncStateStore: Disk store for UID tracking. Defaults to `SyncStateStore()`.
+    ///   - manualCheckClientFactory: Produces the dedicated client used for manual unread checks. Defaults to `NIOIMAPClient()`.
+    ///   - syncStateStore: Disk store for UID tracking. Defaults to `SyncStateStore.shared`.
     ///   - defaultSyncFrequency: Global fallback frequency. Defaults to `AppPreferences.shared.defaultSyncFrequency`.
     ///   - idleRefreshDuration: Inactivity duration before re-issuing IDLE. Defaults to 28 minutes.
     ///   - passwordProvider: Async closure retrieving the decrypted password from Keychain.
     ///   - reauthenticationHandler: Closure invoked when authentication fails.
+    ///   - authenticationRecoveredHandler: Closure invoked when a previously flagged account logs in successfully.
     ///   - sleepProvider: Timing closure for async delays (injected in unit tests).
+    ///   - backoffJitter: Returns a fraction in `0...1` added on top of each backoff delay. Defaults to random 0-20%.
     ///   - onNewMail: Callback invoked when new messages are detected.
     public init(
         account: Account,
         imapClient: (any IMAPConnecting)? = nil,
+        manualCheckClientFactory: (@Sendable () -> any IMAPConnecting)? = nil,
         syncStateStore: (any SyncStateStoreProtocol)? = nil,
         defaultSyncFrequency: SyncFrequency = .always,
-        idleRefreshDuration: Duration = .seconds(1680), // 28 minutes
+        idleRefreshDuration: Duration = .seconds(600), // 10 minutes
         passwordProvider: (@Sendable (UUID) async throws -> String)? = nil,
         reauthenticationHandler: (@Sendable (UUID) async -> Void)? = nil,
+        authenticationRecoveredHandler: (@Sendable (UUID) async -> Void)? = nil,
         sleepProvider: (@Sendable (Duration) async throws -> Void)? = nil,
+        backoffJitter: (@Sendable () -> Double)? = nil,
         onNewMail: (@Sendable (NewMailEvent) -> Void)? = nil
     ) {
         self.account = account
         self.imapClient = imapClient ?? NIOIMAPClient()
-        self.syncStateStore = syncStateStore ?? SyncStateStore()
+        self.manualCheckClientFactory = manualCheckClientFactory ?? { NIOIMAPClient() }
+        self.syncStateStore = syncStateStore ?? SyncStateStore.shared
         self.defaultSyncFrequency = defaultSyncFrequency
         self.idleRefreshDuration = idleRefreshDuration
 
@@ -138,10 +150,19 @@ public actor AccountSyncWorker {
             }
         }
 
+        self.authenticationRecoveredHandler = authenticationRecoveredHandler ?? { accountID in
+            await MainActor.run {
+                let manager = AccountManager.shared
+                guard manager.accounts.first(where: { $0.id == accountID })?.needsReauthentication == true else { return }
+                try? manager.setNeedsReauthentication(forAccountID: accountID, needsReauthentication: false)
+            }
+        }
+
         self.sleepProvider = sleepProvider ?? { duration in
             try await Task.sleep(for: duration)
         }
 
+        self.backoffJitter = backoffJitter ?? { Double.random(in: 0...0.2) }
         self.onNewMail = onNewMail
     }
 
@@ -153,11 +174,23 @@ public actor AccountSyncWorker {
     public func start() {
         guard !isRunning else { return }
         isRunning = true
-        Self.logger.info("Starting sync worker for account \(self.account.id.uuidString, privacy: .public) (\(self.account.displayName, privacy: .public))")
+        Self.logger.info("Starting sync worker for account \(self.account.id.uuidString, privacy: .public)")
 
         syncTask = Task { [weak self] in
             await self?.runLoop()
         }
+    }
+
+    /// Drops the current connection and retries immediately.
+    ///
+    /// Called after the Mac wakes from sleep or the network returns: an IDLE socket can be dead while still
+    /// looking connected, and would otherwise only be noticed at the next refresh.
+    public func reconnectNow() async {
+        guard isRunning else { return }
+        Self.logger.info("Reconnect requested for account \(self.account.id.uuidString, privacy: .public)")
+        currentRetryCount = 0
+        wakeSignal.signal()
+        await imapClient.disconnect()
     }
 
     /// Cleanly cancels the sync loop and disconnects active network sessions.
@@ -184,11 +217,12 @@ public actor AccountSyncWorker {
                 try await imapClient.connect(host: account.provider.imapHost, port: account.provider.imapPort)
 
                 try await imapClient.login(email: account.email, password: password)
+                consecutiveLoginRejections = 0
+                await clearReauthenticationFlagIfNeeded()
                 let mailboxStatus = try await imapClient.selectInbox()
 
                 // Baseline sync check
                 try processInitialBaseline(mailboxStatus: mailboxStatus)
-                currentRetryCount = 0 // Reset backoff on successful handshake & baseline sync
 
                 let canUseIdle: Bool
                 if effectiveFrequency == .always {
@@ -210,15 +244,11 @@ public actor AccountSyncWorker {
                 }
             } catch let error as IMAPClientError where error == .authenticationFailed {
                 Self.logger.fault("Authentication failed for account \(self.account.id.uuidString, privacy: .public). Halting worker and flagging reauthentication requirement.")
-                isRunning = false
-                await reauthenticationHandler?(account.id)
-                await imapClient.disconnect()
+                await haltForReauthentication()
                 break
-            } catch let error as KeychainError where error == .accessDeniedOrCancelled {
-                Self.logger.fault("Keychain access denied or cancelled for account \(self.account.id.uuidString, privacy: .public). Halting worker and flagging reauthentication requirement.")
-                isRunning = false
-                await reauthenticationHandler?(account.id)
-                await imapClient.disconnect()
+            } catch let error as KeychainError where error == .accessDeniedOrCancelled || error == .itemNotFound {
+                Self.logger.fault("Keychain access denied, cancelled, or item missing for account \(self.account.id.uuidString, privacy: .public). Halting worker and flagging reauthentication requirement.")
+                await haltForReauthentication()
                 break
             } catch is CancellationError {
                 Self.logger.debug("Sync worker loop cancelled for account \(self.account.id.uuidString, privacy: .public)")
@@ -226,6 +256,17 @@ public actor AccountSyncWorker {
             } catch {
                 await imapClient.disconnect()
                 guard isRunning && !Task.isCancelled else { break }
+
+                if let imapError = error as? IMAPClientError, case .loginRejected = imapError {
+                    consecutiveLoginRejections += 1
+                    if consecutiveLoginRejections >= Self.maxConsecutiveLoginRejections {
+                        Self.logger.fault("Login rejected \(self.consecutiveLoginRejections) times in a row for account \(self.account.id.uuidString, privacy: .public). Halting worker and flagging reauthentication requirement.")
+                        await haltForReauthentication()
+                        break
+                    }
+                } else {
+                    consecutiveLoginRejections = 0
+                }
 
                 let backoffDelay = computeBackoffDelay()
                 Self.logger.warning("Sync error for account \(self.account.id.uuidString, privacy: .public): \(error.localizedDescription, privacy: .public). Retrying in \(Int(backoffDelay.components.seconds))s (attempt #\(self.currentRetryCount))")
@@ -257,6 +298,11 @@ public actor AccountSyncWorker {
 
     private func runIdleMode() async throws {
         while isRunning && !Task.isCancelled {
+            // Catch up on anything that arrived while disconnected or between IDLE sessions: servers only
+            // announce mail that arrives during IDLE, so this must run before every (re)entry.
+            try await fetchAndEmitNewMail()
+            currentRetryCount = 0 // A full connect + fetch cycle succeeded: reset backoff
+
             let stream = try await imapClient.startIdle()
 
             // Run IDLE stream with a refresh timer and wake signal
@@ -271,9 +317,6 @@ public actor AccountSyncWorker {
                             try await self.imapClient.stopIdle()
                             try await self.fetchAndEmitNewMail()
                             return // Exit task to restart IDLE loop with fresh state
-                        case .idleTimedOut:
-                            try await self.imapClient.stopIdle()
-                            return
                         }
                     }
                 }
@@ -287,11 +330,9 @@ public actor AccountSyncWorker {
                 }
 
                 group.addTask {
+                    // Woken by `stop()` or `reconnectNow()`. Ending this child ends the IDLE session; the caller
+                    // then either exits (stopped) or reconnects (the connection was dropped).
                     await self.wakeSignal.wait()
-                    guard !Task.isCancelled else { return }
-                    Self.logger.info("Manual check triggered in IDLE mode for account \(self.account.id.uuidString, privacy: .public)")
-                    try await self.imapClient.stopIdle()
-                    try await self.fetchAndEmitNewMail()
                 }
 
                 // Wait for either new mail, refresh timeout, or manual wake signal
@@ -316,6 +357,7 @@ public actor AccountSyncWorker {
 
         // 1. Fetch any new messages immediately
         try await fetchAndEmitNewMail()
+        currentRetryCount = 0 // A full connect + fetch cycle succeeded: reset backoff
 
         // 2. Disconnect to preserve RAM and power in polling mode
         await imapClient.disconnect()
@@ -416,16 +458,22 @@ public actor AccountSyncWorker {
             return
         }
 
-        let maxUID = messages.map(\.uid).max() ?? self.lastSeenUID
-        self.lastSeenUID = max(maxUID, self.lastSeenUID)
+        let newLastSeenUID = max(messages.map(\.uid).max() ?? self.lastSeenUID, self.lastSeenUID)
 
         let updatedState = SyncState(
             accountID: account.id,
             uidValidity: self.currentUIDValidity,
-            lastSeenUID: self.lastSeenUID,
+            lastSeenUID: newLastSeenUID,
             lastSyncedAt: Date()
         )
-        try syncStateStore.updateState(updatedState)
+        do {
+            try syncStateStore.updateState(updatedState)
+        } catch {
+            // Persistence failed (for example a full disk). Notify anyway so the user is not left without an alert;
+            // the in-memory marker still advances so a transient save failure cannot cause repeated alerts.
+            Self.logger.error("Failed to persist sync state for account \(self.account.id.uuidString, privacy: .public): \(error.localizedDescription, privacy: .public)")
+        }
+        self.lastSeenUID = newLastSeenUID
 
         Self.logger.info("Detected \(messages.count, privacy: .public) new message(s) for account \(self.account.id.uuidString, privacy: .public). Highest UID is now \(self.lastSeenUID, privacy: .public).")
         let event = NewMailEvent(accountID: account.id, messages: messages)
@@ -433,6 +481,21 @@ public actor AccountSyncWorker {
     }
 
     // MARK: - Helpers
+
+    /// Stops the loop and flags the account so the user is asked for a new app password.
+    private func haltForReauthentication() async {
+        isRunning = false
+        await reauthenticationHandler?(account.id)
+        await imapClient.disconnect()
+    }
+
+    /// Clears a stale `needsReauthentication` flag once the server accepts the stored credentials again.
+    private func clearReauthenticationFlagIfNeeded() async {
+        guard account.needsReauthentication, !hasClearedReauthenticationFlag else { return }
+        hasClearedReauthenticationFlag = true
+        Self.logger.info("Login succeeded for previously flagged account \(self.account.id.uuidString, privacy: .public); clearing re-authentication flag")
+        await authenticationRecoveredHandler?(account.id)
+    }
 
     private func resolveEffectiveFrequency() -> SyncFrequency {
         if account.syncFrequency == .useDefault {
@@ -446,14 +509,17 @@ public actor AccountSyncWorker {
         let maxSeconds: Double = 300.0
         let multiplier = pow(2.0, Double(min(currentRetryCount, 6)))
         let delay = min(baseSeconds * multiplier, maxSeconds)
-        return .seconds(Int64(delay))
+        let jittered = delay * (1 + max(0, backoffJitter()))
+        return .seconds(Int64(jittered))
     }
 }
 
 // MARK: - Wake Signal Coordination
 
 /// Thread-safe coordination signal used to interrupt an active sleep or IDLE session on demand.
-private final class WakeSignal: @unchecked Sendable {
+///
+/// `@unchecked Sendable` justification: all mutable state (`continuations`) is only accessed while holding `lock`.
+final class WakeSignal: @unchecked Sendable {
     private let lock = NSLock()
     private var continuations: [UUID: CheckedContinuation<Void, Never>] = [:]
 
@@ -462,6 +528,13 @@ private final class WakeSignal: @unchecked Sendable {
         await withTaskCancellationHandler {
             await withCheckedContinuation { continuation in
                 lock.lock()
+                if Task.isCancelled {
+                    // The cancellation handler already ran before this continuation existed; without this
+                    // check the continuation would be registered after the only wake-up chance has passed.
+                    lock.unlock()
+                    continuation.resume()
+                    return
+                }
                 continuations[id] = continuation
                 lock.unlock()
             }

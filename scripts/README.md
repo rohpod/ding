@@ -78,6 +78,8 @@ Resets local testing state to simulate a completely fresh "first launch" environ
 3. Resets macOS notification and TCC privacy permissions (`tccutil reset All com.ding.mac.v3`).
 4. Clears saved user preferences from macOS `UserDefaults` (`defaults delete com.ding.mac.v3`).
 
+> **Note**: this resets *preferences and permissions only*. Your accounts (`~/Library/Application Support/Ding/accounts.json`), sync state, and Keychain passwords are **not** removed, so ding does not return to a completely empty first-launch state.
+
 ### How to Run
 
 ```bash
@@ -97,11 +99,12 @@ For routine local development, feature testing, or system integration checks, us
 
 ### What it Does
 1. **Version Validation**: Reads `VERSION` from the repository root and validates that it follows strict semantic versioning (`x.y.z` with numeric digits only).
-2. **Overwrite Safety**: Checks if a release archive for this exact version already exists in `dist/`. If found, it warns and prompts for confirmation to prevent accidental clobbering (can be bypassed with `--force`).
-3. **Build Execution**: Calls `scripts/build-app.sh release --no-run` to compile an optimized release binary and assemble an ad-hoc signed `ding.app` bundle in `.build/`.
-4. **Staging & Packaging**: Copies `ding.app` into an isolated staging directory (`.build/release-staging/`) and zips it into `dist/ding-{VERSION}.zip`, preserving symlinks and bundle structure.
-5. **Checksum Generation**: Computes a SHA-256 checksum file (`dist/ding-{VERSION}.zip.sha256`) using `shasum -a 256` for integrity verification.
-6. **Next Steps Summary**: Prints the archive path, size, SHA-256 hash, and exact terminal commands for tagging and publishing to GitHub.
+2. **Release Safety**: Refuses to continue if `DING_DEV_BUILD=1` is set, if the working tree has uncommitted changes (override with `--allow-dirty`), or if the Sparkle EdDSA signature cannot be produced. It never writes a placeholder signature.
+3. **Overwrite Safety**: Checks if a release archive for this exact version already exists in `dist/`. If found, it warns and prompts for confirmation to prevent accidental clobbering (can be bypassed with `--force`).
+4. **Build Execution**: Calls `scripts/build-app.sh release --no-run` to compile an optimized release binary and assemble an ad-hoc signed `ding.app` bundle in `.build/`.
+5. **Staging & Packaging**: Copies `ding.app` into an isolated staging directory (`.build/release-staging/`) and zips it into `dist/ding-{VERSION}.zip`, preserving symlinks and bundle structure.
+6. **Checksum Generation**: Computes a SHA-256 checksum file (`dist/ding-{VERSION}.zip.sha256`) using `shasum -a 256` for integrity verification.
+7. **Next Steps Summary**: Prints the archive path, size, SHA-256 hash, and exact terminal commands for tagging and publishing to GitHub.
 
 ### How to Run
 

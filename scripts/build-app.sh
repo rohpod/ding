@@ -201,7 +201,7 @@ ${DEV_PLIST_ENTRY}
 
     <!-- Copyright Information -->
     <key>NSHumanReadableCopyright</key>
-    <string>Copyright © 2026 ding. All rights reserved.</string>
+    <string>Copyright © 2026 Rohan Poddar. Released under the MIT License.</string>
 </dict>
 </plist>
 EOF

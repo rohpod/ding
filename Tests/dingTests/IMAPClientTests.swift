@@ -1,3 +1,4 @@
+import NIOIMAPCore
 import XCTest
 @testable import ding
 
@@ -472,5 +473,33 @@ final class IMAPClientTests: XCTestCase {
         } catch {
             XCTFail("Unexpected error: \(error)")
         }
+    }
+
+    // MARK: - Login rejection classification
+
+    func testLoginRejectionClassification() {
+        func classify(_ code: ResponseTextCode?) -> IMAPClientError {
+            NIOIMAPClient.classifyLoginRejection(ResponseText(code: code, text: "server text"))
+        }
+
+        XCTAssertEqual(classify(.authenticationFailed), .authenticationFailed)
+        XCTAssertEqual(classify(.authorizationFailed), .authenticationFailed)
+        XCTAssertEqual(classify(.expired), .authenticationFailed)
+
+        XCTAssertEqual(classify(.unavailable), .temporarilyUnavailable("server text"))
+        XCTAssertEqual(classify(.limit), .temporarilyUnavailable("server text"))
+        XCTAssertEqual(classify(.inUse), .temporarilyUnavailable("server text"))
+
+        // A bare NO is ambiguous and must not be treated as proof of a bad password
+        XCTAssertEqual(classify(nil), .loginRejected("server text"))
+        XCTAssertEqual(classify(.alert), .loginRejected("server text"))
+    }
+
+    func testNewLoginErrorsAreDistinctAndDescribed() {
+        XCTAssertNotEqual(IMAPClientError.loginRejected("a"), .authenticationFailed)
+        XCTAssertNotEqual(IMAPClientError.temporarilyUnavailable("a"), .loginRejected("a"))
+        XCTAssertEqual(IMAPClientError.loginRejected("a"), .loginRejected("a"))
+        XCTAssertTrue(IMAPClientError.loginRejected("Invalid credentials").localizedDescription.contains("Invalid credentials"))
+        XCTAssertTrue(IMAPClientError.temporarilyUnavailable("maintenance").localizedDescription.contains("maintenance"))
     }
 }

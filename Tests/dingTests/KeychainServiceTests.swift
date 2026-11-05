@@ -170,4 +170,49 @@ final class KeychainServiceTests: XCTestCase {
             XCTAssertEqual(error as? KeychainError, .accessDeniedOrCancelled)
         }
     }
+
+    func testLegacyServiceItemIsMigratedForwardOnRetrieve() {
+        let legacyName = "com.ding.mac.v2.tests.\(UUID().uuidString)"
+        let currentName = "com.ding.mac.v3.tests.\(UUID().uuidString)"
+        let legacy = KeychainService(serviceName: legacyName, legacyServiceNames: [])
+        let current = KeychainService(serviceName: currentName, legacyServiceNames: [legacyName])
+        let id = UUID()
+
+        do {
+            try legacy.store(password: "old-release-password", forAccountID: id)
+            defer {
+                try? legacy.deletePassword(forAccountID: id)
+                try? current.deletePassword(forAccountID: id)
+            }
+
+            XCTAssertEqual(try current.retrievePassword(forAccountID: id), "old-release-password")
+
+            // The item now lives under the current name and the legacy copy is gone.
+            let currentOnly = KeychainService(serviceName: currentName, legacyServiceNames: [])
+            XCTAssertEqual(try currentOnly.retrievePassword(forAccountID: id), "old-release-password")
+            XCTAssertThrowsError(try legacy.retrievePassword(forAccountID: id)) { error in
+                XCTAssertEqual(error as? KeychainError, .itemNotFound)
+            }
+        } catch let error as KeychainError {
+            switch error {
+            case .unhandledStatus(let status) where status == errSecInteractionNotAllowed || status == -34018 || status == -60005:
+                break // headless runner without an interactive keychain
+            default:
+                XCTFail("Unexpected Keychain error: \(error)")
+            }
+        } catch {
+            XCTFail("Unexpected error: \(error)")
+        }
+    }
+
+    func testMissingItemEverywhereStillReportsItemNotFound() {
+        let service = KeychainService(
+            serviceName: "com.ding.mac.v3.tests.\(UUID().uuidString)",
+            legacyServiceNames: ["com.ding.mac.v2.tests.\(UUID().uuidString)"]
+        )
+        XCTAssertThrowsError(try service.retrievePassword(forAccountID: UUID())) { error in
+            if let keychainError = error as? KeychainError, case .unhandledStatus = keychainError { return } // headless
+            XCTAssertEqual(error as? KeychainError, .itemNotFound)
+        }
+    }
 }

@@ -1,20 +1,5 @@
 import Foundation
 
-/// Protocol defining the contract for IMAP connection and authentication operations.
-///
-/// ## Architecture & Testability Seam
-/// `IMAPConnecting` serves as the primary abstraction boundary between higher-level application components
-/// (such as `AccountManager`, the "Add Account" verification flow, and `SyncEngine`) and the
-/// underlying networking engine.
-///
-/// By depending on `IMAPConnecting` rather than concrete SwiftNIO networking types:
-/// - **Hermetic Unit Testing**: Tests can substitute an in-memory test double (`FakeIMAPClient`) that simulates
-///   various network and authentication outcomes without opening sockets or hitting live mail servers in CI.
-/// - **SwiftUI Previews**: Interactive account configuration previews can simulate immediate connection success
-///   or typed failure scenarios.
-/// - **Actor Concurrency Boundary**: Because live IMAP networking involves complex, mutable connection and channel
-///   state, real implementations (such as `NIOIMAPClient`) are implemented as Swift `actor`s. This protocol's
-///   asynchronous contract accommodates actor isolation cleanly under Swift 6 strict concurrency rules.
 /// Represents the mailbox state returned by an IMAP `SELECT` command.
 public struct MailboxStatus: Sendable, Equatable {
     /// The unique identifier validity value for the mailbox.
@@ -76,10 +61,23 @@ public enum IdleEvent: Sendable, Equatable {
     /// Server notified of mailbox changes (e.g. `EXISTS`, `RECENT`, or `FETCH`), indicating new mail may be available.
     case newMailAvailable
 
-    /// The IDLE session reached its inactivity refresh threshold.
-    case idleTimedOut
 }
 
+/// Protocol defining the contract for IMAP connection and authentication operations.
+///
+/// ## Architecture & Testability Seam
+/// `IMAPConnecting` serves as the primary abstraction boundary between higher-level application components
+/// (such as `AccountManager`, the "Add Account" verification flow, and `SyncEngine`) and the
+/// underlying networking engine.
+///
+/// By depending on `IMAPConnecting` rather than concrete SwiftNIO networking types:
+/// - **Hermetic Unit Testing**: Tests can substitute an in-memory test double (`FakeIMAPClient`) that simulates
+///   various network and authentication outcomes without opening sockets or hitting live mail servers in CI.
+/// - **SwiftUI Previews**: Interactive account configuration previews can simulate immediate connection success
+///   or typed failure scenarios.
+/// - **Actor Concurrency Boundary**: Because live IMAP networking involves complex, mutable connection and channel
+///   state, real implementations (such as `NIOIMAPClient`) are implemented as Swift `actor`s. This protocol's
+///   asynchronous contract accommodates actor isolation cleanly under Swift 6 strict concurrency rules.
 public protocol IMAPConnecting: Sendable {
     /// Indicates whether the client currently maintains an active network connection to the IMAP server.
     var isConnected: Bool { get async }

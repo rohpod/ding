@@ -47,6 +47,15 @@ public protocol AccountStoreProtocol: Sendable {
     /// - Parameter accounts: The list of `Account` models to persist.
     /// - Throws: `AccountStoreError` if directory creation, encoding, or writing fails.
     func save(_ accounts: [Account]) throws
+
+    /// Moves an undecodable accounts file aside so it is preserved rather than overwritten by the next save.
+    ///
+    /// - Returns: The new location of the preserved file, or `nil` if the store has nothing to set aside.
+    func quarantineCorruptFile() throws -> URL?
+}
+
+extension AccountStoreProtocol {
+    public func quarantineCorruptFile() throws -> URL? { nil }
 }
 
 /// Manages serialization and deserialization of account models to `accounts.json`
@@ -111,6 +120,13 @@ public final class AccountStore: AccountStoreProtocol, Sendable {
             Self.logger.error("Failed to decode accounts JSON: \(error.localizedDescription, privacy: .public)")
             throw AccountStoreError.decodingFailed(error)
         }
+    }
+
+    public func quarantineCorruptFile() throws -> URL? {
+        guard FileManager.default.fileExists(atPath: fileURL.path) else { return nil }
+        let preserved = try FileQuarantine.quarantine(fileAt: fileURL)
+        Self.logger.error("Preserved undecodable accounts file as \(preserved.lastPathComponent, privacy: .public)")
+        return preserved
     }
 
     /// Saves accounts to disk atomically.
