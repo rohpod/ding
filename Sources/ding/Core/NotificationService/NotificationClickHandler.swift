@@ -60,7 +60,16 @@ public struct NotificationActionRouter {
         case .openInBrowser:
             // Open provider's inbox in the default web browser.
             // Deep-linking to individual messages varies by provider.
-            let webmailURL = provider.webmailURL
+            // A custom server has no known webmail, so fall back to the mail app rather than doing nothing: the
+            // global default click behavior can be "open in browser" for an account that has no browser page.
+            guard let webmailURL = provider.webmailURL else {
+                return execute(
+                    behavior: .openMailApp,
+                    provider: provider,
+                    defaultMailAppURLResolver: defaultMailAppURLResolver,
+                    urlOpener: urlOpener
+                )
+            }
             return urlOpener(webmailURL)
         }
     }
@@ -101,12 +110,14 @@ public final class NotificationClickHandler: NSObject, UNUserNotificationCenterD
             return
         }
 
-        let isReauthentication = userInfo[NotificationUserInfoKey.kind] as? String == NotificationUserInfoKey.reauthenticationKind
+        // Both kinds describe an account that isn't syncing, so there is no mail to open: go to Settings instead.
+        let kind = userInfo[NotificationUserInfoKey.kind] as? String
+        let opensSettings = kind == NotificationUserInfoKey.reauthenticationKind
+            || kind == NotificationUserInfoKey.connectionProblemKind
 
         await MainActor.run {
             Self.lastNotificationClickTime = Date()
-            if isReauthentication {
-                // The account can't sync until a new app password is entered, so go straight to Settings.
+            if opensSettings {
                 AppDelegate.shared?.openSettings()
             } else {
                 self.handleClick(forAccountID: accountID)

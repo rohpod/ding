@@ -18,6 +18,9 @@ final class ConnectivityMonitor {
     /// Invoked (on the main actor) when workers should drop their connections and reconnect.
     var onReconnectNeeded: (@MainActor () -> Void)?
 
+    /// Invoked (on the main actor) on every network status change with whether the network is usable.
+    var onNetworkAvailabilityChanged: (@MainActor (Bool) -> Void)?
+
     private let debounce: Duration
     private let pathMonitor = NWPathMonitor()
     private var wakeObserver: NSObjectProtocol?
@@ -65,10 +68,12 @@ final class ConnectivityMonitor {
         wakeObserver = nil
     }
 
-    /// Reacts to a network path change; only a transition *into* a usable network is interesting.
+    /// Reacts to a network path change. Every change is reported as availability; only a transition *into* a
+    /// usable network also triggers a reconnect.
     func handlePathUpdate(status: NWPath.Status) {
         let previous = lastPathStatus
         lastPathStatus = status
+        onNetworkAvailabilityChanged?(status == .satisfied)
         guard let previous, previous != .satisfied, status == .satisfied else { return }
         Self.logger.info("Network became available")
         scheduleTrigger()

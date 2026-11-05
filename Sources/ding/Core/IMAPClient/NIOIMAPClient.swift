@@ -97,7 +97,7 @@ public actor NIOIMAPClient: IMAPConnecting {
             await disconnect()
         }
 
-        Self.logger.info("Attempting IMAP connection to \(host, privacy: .public):\(port, privacy: .public)")
+        Self.logger.info("Attempting IMAP connection to \(host, privacy: .private):\(port, privacy: .public)")
 
         do {
             try await withTimeout(seconds: 15) {
@@ -106,11 +106,11 @@ public actor NIOIMAPClient: IMAPConnecting {
         } catch {
             await self.disconnect()
             let mapped = self.mapError(error)
-            Self.logger.error("IMAP connection failed to \(host, privacy: .public): \(mapped.localizedDescription, privacy: .public)")
+            Self.logger.error("IMAP connection failed to \(host, privacy: .private): \(mapped.localizedDescription, privacy: .private)")
             throw mapped
         }
 
-        Self.logger.info("Successfully connected and received greeting from \(host, privacy: .public)")
+        Self.logger.info("Successfully connected and received greeting from \(host, privacy: .private)")
     }
 
     /// Authenticates with the IMAP server using the provided credentials via IMAP `LOGIN`.
@@ -124,7 +124,7 @@ public actor NIOIMAPClient: IMAPConnecting {
             throw IMAPClientError.notConnected
         }
 
-        Self.logger.info("Sending IMAP LOGIN command to \(self.currentHost ?? "server", privacy: .public)")
+        Self.logger.info("Sending IMAP LOGIN command to \(self.currentHost ?? "server", privacy: .private)")
 
         let tag = nextTag()
         let command = Command.login(username: email, password: password)
@@ -141,12 +141,12 @@ public actor NIOIMAPClient: IMAPConnecting {
 
             switch response.tagged.state {
             case .ok:
-                Self.logger.info("IMAP authentication succeeded for \(self.currentHost ?? "server", privacy: .public)")
+                Self.logger.info("IMAP authentication succeeded for \(self.currentHost ?? "server", privacy: .private)")
             case .no(let responseText):
-                Self.logger.warning("IMAP login rejected (NO) from \(self.currentHost ?? "server", privacy: .public): \(responseText.text, privacy: .public)")
+                Self.logger.warning("IMAP login rejected (NO) from \(self.currentHost ?? "server", privacy: .private): \(responseText.text, privacy: .private)")
                 throw Self.classifyLoginRejection(responseText)
             case .bad(let responseText):
-                Self.logger.warning("IMAP login rejected (BAD) from \(self.currentHost ?? "server", privacy: .public): \(responseText.text, privacy: .public)")
+                Self.logger.warning("IMAP login rejected (BAD) from \(self.currentHost ?? "server", privacy: .private): \(responseText.text, privacy: .private)")
                 throw Self.classifyLoginRejection(responseText)
             }
         } catch let clientError as IMAPClientError {
@@ -165,7 +165,7 @@ public actor NIOIMAPClient: IMAPConnecting {
             return
         }
 
-        Self.logger.info("Disconnecting IMAP client from \(self.currentHost ?? "server", privacy: .public)")
+        Self.logger.info("Disconnecting IMAP client from \(self.currentHost ?? "server", privacy: .private)")
 
         // Stop active IDLE if in progress
         if self.activeIdleTag != nil {
@@ -210,7 +210,7 @@ public actor NIOIMAPClient: IMAPConnecting {
             throw IMAPClientError.notConnected
         }
 
-        Self.logger.info("Selecting INBOX mailbox on \(self.currentHost ?? "server", privacy: .public)")
+        Self.logger.info("Selecting INBOX mailbox on \(self.currentHost ?? "server", privacy: .private)")
 
         let tag = nextTag()
         let command = Command.select(MailboxName.inbox)
@@ -229,10 +229,10 @@ public actor NIOIMAPClient: IMAPConnecting {
             case .ok:
                 break
             case .no(let responseText):
-                Self.logger.warning("SELECT INBOX failed (NO): \(responseText.text, privacy: .public)")
+                Self.logger.warning("SELECT INBOX failed (NO): \(responseText.text, privacy: .private)")
                 throw IMAPClientError.selectFailed(responseText.text)
             case .bad(let responseText):
-                Self.logger.warning("SELECT INBOX failed (BAD): \(responseText.text, privacy: .public)")
+                Self.logger.warning("SELECT INBOX failed (BAD): \(responseText.text, privacy: .private)")
                 throw IMAPClientError.selectFailed(responseText.text)
             }
 
@@ -299,11 +299,14 @@ public actor NIOIMAPClient: IMAPConnecting {
         }
     }
 
+    /// The most messages whose envelope (sender and subject) is fetched for one batch of new mail.
+    static let maxEnvelopesPerFetch = 5
+
     /// Fetches lightweight header summaries for messages with a UID greater than `sinceUID`.
     ///
     /// Done in two steps to bound memory and bandwidth no matter how large the backlog is: first only the UIDs
-    /// (a few bytes each), then the envelope only when exactly one message is new, because that is the only case
-    /// where a notification shows a sender and subject. Larger batches are summarised by count alone.
+    /// (a few bytes each) for the whole backlog, then the envelope for the newest `maxEnvelopesPerFetch` messages,
+    /// which is all a notification can name. Older messages in a larger batch keep empty sender and subject text.
     public func fetchNewMessages(sinceUID: UInt32) async throws -> [MessageSummary] {
         guard sinceUID < UInt32.max else {
             return []
@@ -311,16 +314,31 @@ public actor NIOIMAPClient: IMAPConnecting {
 
         Self.logger.info("Fetching new messages since UID \(sinceUID, privacy: .public)")
 
+        // Everything the server has announced so far is picked up by the fetches below. Clearing once, before the
+        // first step, keeps an EXISTS that arrives between the two steps pending instead of erasing it.
+        responseHandler?.clearPendingExists()
+
         let backlog = UIDSet([UIDRange(UID(rawValue: sinceUID + 1)...)])
         let found = try await fetchMessages(matching: backlog, attributes: [.uid], sinceUID: sinceUID)
 
-        guard found.count == 1, let only = found.first else {
+        let newest = found.suffix(Self.maxEnvelopesPerFetch)
+        guard !newest.isEmpty else {
             return found
         }
 
-        let single = UIDSet([UIDRange(UID(rawValue: only.uid)...UID(rawValue: only.uid))])
-        let detailed = try await fetchMessages(matching: single, attributes: [.uid, .envelope], sinceUID: sinceUID)
-        return detailed.isEmpty ? found : detailed
+        // The newest UIDs need not be contiguous, so address each one explicitly.
+        let ranges = newest.map { UIDRange(UID(rawValue: $0.uid)...UID(rawValue: $0.uid)) }
+        let detailed = try await fetchMessages(matching: UIDSet(ranges), attributes: [.uid, .envelope], sinceUID: sinceUID)
+        return Self.mergeEnvelopes(into: found, details: detailed)
+    }
+
+    /// Replaces each summary in `found` with the detailed summary for the same UID, when one was fetched.
+    ///
+    /// The full list is kept, because the caller derives its high-water mark from the largest UID. A UID missing
+    /// from `details` (for example expunged between the two fetches) keeps its empty entry.
+    static func mergeEnvelopes(into found: [MessageSummary], details: [MessageSummary]) -> [MessageSummary] {
+        let detailsByUID = Dictionary(details.map { ($0.uid, $0) }, uniquingKeysWith: { _, latest in latest })
+        return found.map { detailsByUID[$0.uid] ?? $0 }
     }
 
     /// Issues one `UID FETCH` and parses the untagged `FETCH` responses into summaries (ascending by UID).
@@ -332,9 +350,6 @@ public actor NIOIMAPClient: IMAPConnecting {
         guard self.isConnected, let channel = self.channel, let handler = self.responseHandler else {
             throw IMAPClientError.notConnected
         }
-
-        // This fetch picks up everything the server has announced so far.
-        handler.clearPendingExists()
 
         let tag = nextTag()
         guard let command = Command.uidFetch(
@@ -360,10 +375,10 @@ public actor NIOIMAPClient: IMAPConnecting {
             case .ok:
                 break
             case .no(let responseText):
-                Self.logger.warning("UID FETCH failed (NO): \(responseText.text, privacy: .public)")
+                Self.logger.warning("UID FETCH failed (NO): \(responseText.text, privacy: .private)")
                 throw IMAPClientError.unexpectedResponse("UID FETCH rejected: \(responseText.text)")
             case .bad(let responseText):
-                Self.logger.warning("UID FETCH failed (BAD): \(responseText.text, privacy: .public)")
+                Self.logger.warning("UID FETCH failed (BAD): \(responseText.text, privacy: .private)")
                 throw IMAPClientError.unexpectedResponse("UID FETCH syntax error: \(responseText.text)")
             }
 
@@ -425,7 +440,7 @@ public actor NIOIMAPClient: IMAPConnecting {
             throw IMAPClientError.notConnected
         }
 
-        Self.logger.info("Fetching unread count for INBOX on \(self.currentHost ?? "server", privacy: .public)")
+        Self.logger.info("Fetching unread count for INBOX on \(self.currentHost ?? "server", privacy: .private)")
 
         let tag = nextTag()
         let command = Command.status(MailboxName.inbox, [.unseenCount])
@@ -444,10 +459,10 @@ public actor NIOIMAPClient: IMAPConnecting {
             case .ok:
                 break
             case .no(let responseText):
-                Self.logger.warning("STATUS INBOX failed (NO): \(responseText.text, privacy: .public)")
+                Self.logger.warning("STATUS INBOX failed (NO): \(responseText.text, privacy: .private)")
                 throw IMAPClientError.unexpectedResponse("STATUS INBOX rejected: \(responseText.text)")
             case .bad(let responseText):
-                Self.logger.warning("STATUS INBOX failed (BAD): \(responseText.text, privacy: .public)")
+                Self.logger.warning("STATUS INBOX failed (BAD): \(responseText.text, privacy: .private)")
                 throw IMAPClientError.unexpectedResponse("STATUS INBOX syntax error: \(responseText.text)")
             }
 
@@ -562,7 +577,7 @@ public actor NIOIMAPClient: IMAPConnecting {
             Self.logger.info("IMAP IDLE stream established for tag \(tag, privacy: .public)")
             return stream
         } catch {
-            Self.logger.error("Failed to start IMAP IDLE: \(error.localizedDescription, privacy: .public)")
+            Self.logger.error("Failed to start IMAP IDLE: \(error.localizedDescription, privacy: .private)")
             handler.setIdleContinuation(nil)
             streamContinuation.finish(throwing: error)
             self.activeIdleTag = nil
@@ -592,7 +607,7 @@ public actor NIOIMAPClient: IMAPConnecting {
         } catch {
             // A server that never acknowledges DONE usually means a dead socket. Surface the failure so the
             // worker reconnects instead of carrying on as if IDLE had ended cleanly.
-            Self.logger.warning("Error stopping IDLE: \(error.localizedDescription, privacy: .public)")
+            Self.logger.warning("Error stopping IDLE: \(error.localizedDescription, privacy: .private)")
             handler.finishIdleContinuation()
             throw self.mapError(error)
         }

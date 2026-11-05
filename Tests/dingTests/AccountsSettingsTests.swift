@@ -73,9 +73,12 @@ final class AccountsSettingsTests: XCTestCase {
             return
         }
 
-        try await fakeClient.connect(host: provider.imapHost, port: provider.imapPort)
-        try await fakeClient.login(email: email, password: password)
-        await fakeClient.disconnect()
+        try await AccountVerifier.verify(
+            client: fakeClient,
+            server: provider.presetServer!,
+            loginName: email,
+            password: password
+        )
 
         let created = try manager.addAccount(email: email, provider: provider, appPassword: password, alias: "Fastmail")
 
@@ -83,9 +86,11 @@ final class AccountsSettingsTests: XCTestCase {
         let loginCount = await fakeClient.loginCallCount
         let disconnectCount = await fakeClient.disconnectCallCount
         let lastHost = await fakeClient.lastConnectedHost
+        let selectCount = await fakeClient.selectInboxCallCount
 
         XCTAssertEqual(connectCount, 1)
         XCTAssertEqual(loginCount, 1)
+        XCTAssertEqual(selectCount, 1, "Verification must prove the inbox can be selected")
         XCTAssertEqual(disconnectCount, 1)
         XCTAssertEqual(lastHost, "imap.fastmail.com")
         XCTAssertEqual(manager.accounts.count, 1)
@@ -106,12 +111,14 @@ final class AccountsSettingsTests: XCTestCase {
 
         var caughtError: IMAPClientError?
         do {
-            try await fakeClient.connect(host: provider.imapHost, port: provider.imapPort)
-            try await fakeClient.login(email: email, password: password)
-            await fakeClient.disconnect()
+            try await AccountVerifier.verify(
+                client: fakeClient,
+                server: provider.presetServer!,
+                loginName: email,
+                password: password
+            )
             try manager.addAccount(email: email, provider: provider, appPassword: password)
         } catch let error as IMAPClientError {
-            await fakeClient.disconnect()
             caughtError = error
         }
 
@@ -136,12 +143,14 @@ final class AccountsSettingsTests: XCTestCase {
 
         var caughtError: IMAPClientError?
         do {
-            try await fakeClient.connect(host: provider.imapHost, port: provider.imapPort)
-            try await fakeClient.login(email: email, password: password)
-            await fakeClient.disconnect()
+            try await AccountVerifier.verify(
+                client: fakeClient,
+                server: provider.presetServer!,
+                loginName: email,
+                password: password
+            )
             try manager.addAccount(email: email, provider: provider, appPassword: password)
         } catch let error as IMAPClientError {
-            await fakeClient.disconnect()
             caughtError = error
         }
 

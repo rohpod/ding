@@ -46,4 +46,16 @@ final class ConnectivityMonitorTests: XCTestCase {
         try await Task.sleep(nanoseconds: 250_000_000)
         XCTAssertEqual(count, 0)
     }
+
+    func testEveryStatusChangeReportsAvailability() {
+        let monitor = ConnectivityMonitor(debounce: .milliseconds(20))
+        var reports: [Bool] = []
+        monitor.onNetworkAvailabilityChanged = { reports.append($0) }
+
+        monitor.handlePathUpdate(status: .satisfied)      // initial report still counts
+        monitor.handlePathUpdate(status: .unsatisfied)    // going offline is reported even though it triggers nothing
+        monitor.handlePathUpdate(status: .satisfied)
+
+        XCTAssertEqual(reports, [true, false, true])
+    }
 }

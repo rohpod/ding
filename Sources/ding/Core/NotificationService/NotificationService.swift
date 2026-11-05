@@ -15,6 +15,9 @@ public enum NotificationUserInfoKey {
 
     /// The `kind` value for notifications asking the user to update an account's app password.
     public static let reauthenticationKind = "reauthentication"
+
+    /// The `kind` value for notifications reporting that an account has been unreachable for a long time.
+    public static let connectionProblemKind = "connectionProblem"
 }
 
 /// Pure helper responsible for formatting and constructing `UNMutableNotificationContent`
@@ -62,11 +65,23 @@ public struct NotificationContentBuilder {
         return cleanSubject
     }
 
+    /// The most sender names listed in a multi-message notification.
+    static let maxListedSenders = 3
+
+    /// The `threadIdentifier` that stacks one account's mail notifications together.
+    public static func threadIdentifier(forAccountID id: UUID) -> String {
+        "ding.account.\(id.uuidString)"
+    }
+
     /// Formats the notification body text based on incoming messages.
     ///
     /// Single message layout:
     /// From: <sender name or email>
     /// Sub: <subject (up to 3 lines, followed by ... if truncated)>
+    ///
+    /// Multiple messages layout (`messages` ascending by UID, senders listed newest first):
+    /// <N> new messages
+    /// From: <up to 3 distinct senders>[ and others]
     public static func formatBody(for messages: [MessageSummary]) -> String {
         if messages.count == 1, let msg = messages.first {
             var bodyComponents: [String] = []
@@ -88,8 +103,41 @@ public struct NotificationContentBuilder {
         } else if messages.isEmpty {
             return "New mail"
         } else {
-            return "\(messages.count) new messages"
+            let headline = "\(messages.count) new messages"
+            guard let senders = formatSenderList(for: messages) else {
+                return headline
+            }
+            return "\(headline)\n\(senders)"
         }
+    }
+
+    /// The `From:` line for a batch, or nil when no sender is known.
+    ///
+    /// Walks newest first, dedupes case-insensitively and lists at most `maxListedSenders`. " and others" is added
+    /// when more senders exist than are shown, or when any message has no sender because its envelope was not fetched.
+    private static func formatSenderList(for messages: [MessageSummary]) -> String? {
+        var listed: [String] = []
+        var seen = Set<String>()
+        var hasMoreSenders = false
+        var hasUnknownSender = false
+
+        for message in messages.reversed() {
+            let sender = formatSender(message.from)
+            if sender.isEmpty {
+                hasUnknownSender = true
+                continue
+            }
+            guard seen.insert(sender.lowercased()).inserted else { continue }
+            if listed.count < maxListedSenders {
+                listed.append(sender)
+            } else {
+                hasMoreSenders = true
+            }
+        }
+
+        guard !listed.isEmpty else { return nil }
+        let suffix = (hasMoreSenders || hasUnknownSender) ? " and others" : ""
+        return "From: \(listed.joined(separator: ", "))\(suffix)"
     }
 
     /// Constructs a `UNMutableNotificationContent` payload for a given mail event and account.
@@ -109,6 +157,7 @@ public struct NotificationContentBuilder {
             NotificationUserInfoKey.accountID: event.accountID.uuidString,
             NotificationUserInfoKey.messageUIDs: uids
         ]
+        content.threadIdentifier = threadIdentifier(forAccountID: account.id)
 
         return content
     }
@@ -117,11 +166,26 @@ public struct NotificationContentBuilder {
     public static func buildReauthenticationContent(account: Account) -> UNMutableNotificationContent {
         let content = UNMutableNotificationContent()
         content.title = account.displayName.replacingOccurrences(of: "\n", with: " ").trimmingCharacters(in: .whitespacesAndNewlines)
-        content.body = "ding can't sign in to this account, so new mail won't be announced. Click to enter a new app password."
+        content.body = "ding can't sign in to this account, so new mail won't be announced. Click to enter a new \(account.credentialName)."
         content.sound = .default
         content.userInfo = [
             NotificationUserInfoKey.accountID: account.id.uuidString,
             NotificationUserInfoKey.kind: NotificationUserInfoKey.reauthenticationKind
+        ]
+        return content
+    }
+
+    /// Constructs the payload telling the user that ding has been unable to reach an account for a long time.
+    ///
+    /// Deliberately omits the error text, which can echo a server name or username.
+    public static func buildConnectionProblemContent(account: Account) -> UNMutableNotificationContent {
+        let content = UNMutableNotificationContent()
+        content.title = account.displayName.replacingOccurrences(of: "\n", with: " ").trimmingCharacters(in: .whitespacesAndNewlines)
+        content.body = "ding hasn't been able to reach this account for a while, so new mail won't be announced. Click to check its status in Settings."
+        content.sound = .default
+        content.userInfo = [
+            NotificationUserInfoKey.accountID: account.id.uuidString,
+            NotificationUserInfoKey.kind: NotificationUserInfoKey.connectionProblemKind
         ]
         return content
     }
@@ -160,6 +224,7 @@ public struct NotificationContentBuilder {
         content.userInfo = [
             NotificationUserInfoKey.accountID: account.id.uuidString
         ]
+        content.threadIdentifier = threadIdentifier(forAccountID: account.id)
         return content
     }
 }
@@ -257,6 +322,25 @@ public final class NotificationService {
             Self.logger.info("Sent re-authentication notification for account \(account.id.uuidString, privacy: .public)")
         } catch {
             Self.logger.error("Failed to deliver re-authentication notification for account \(account.id.uuidString, privacy: .public): \(error.localizedDescription, privacy: .public)")
+        }
+    }
+
+    /// Builds and delivers a notification saying an account has been unreachable for a long time.
+    public func sendConnectionProblemNotification(account: Account) async {
+        guard NotificationPermissionManager.isRunningInAppBundle else {
+            Self.logger.warning("Running outside an .app bundle; skipping connection-problem notification for account \(account.id.uuidString, privacy: .public)")
+            return
+        }
+
+        let content = NotificationContentBuilder.buildConnectionProblemContent(account: account)
+        let identifier = "ding.mail.connection.\(account.id.uuidString)"
+        let request = UNNotificationRequest(identifier: identifier, content: content, trigger: nil)
+
+        do {
+            try await UNUserNotificationCenter.current().add(request)
+            Self.logger.info("Sent connection-problem notification for account \(account.id.uuidString, privacy: .public)")
+        } catch {
+            Self.logger.error("Failed to deliver connection-problem notification for account \(account.id.uuidString, privacy: .public): \(error.localizedDescription, privacy: .public)")
         }
     }
 

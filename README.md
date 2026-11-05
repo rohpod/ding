@@ -84,7 +84,16 @@ Updates are cryptographically signed and verified before installing, so you're n
 
 ding never sees or stores your real account password. App passwords are separate, provider-generated credentials, revocable independently at any time, stored only in your Mac's Keychain — never in a plaintext file, never transmitted anywhere except directly to your provider's own mail server over TLS.
 
-Generic/custom IMAP servers aren't supported yet — only the five providers above.
+### Other IMAP servers
+
+Anything else works through **Other (IMAP)** in the Add Account sheet: Google Workspace and other custom domains (choose the matching provider, e.g. Gmail), regional providers like `yahoo.co.in`, and self-hosted servers. There are limits, all deliberate:
+
+- **Implicit TLS only**, on any port (usually 993). Servers that require STARTTLS (port 143) aren't supported.
+- **Trusted certificates only.** A self-signed or mismatched certificate is refused rather than bypassed, since that would expose your password.
+- **Password login only.** Servers that require OAuth, including many Microsoft 365 tenants, won't work.
+- **Enter the server by name**, not IP address, and no autodiscovery: ding doesn't look up your domain with any third party.
+
+To change a custom server, remove the account and add it again.
 
 ## Why app passwords, not "Sign in with Google/Microsoft"?
 
