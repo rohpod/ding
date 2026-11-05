@@ -5,33 +5,33 @@ final class MailProviderTests: XCTestCase {
     func testMailProviderPresets() {
         // Gmail
         XCTAssertEqual(MailProvider.gmail.displayName, "Gmail")
-        XCTAssertEqual(MailProvider.gmail.imapHost, "imap.gmail.com")
-        XCTAssertEqual(MailProvider.gmail.imapPort, 993)
-        XCTAssertEqual(MailProvider.gmail.appPasswordURL.absoluteString, "https://myaccount.google.com/apppasswords")
+        XCTAssertEqual(MailProvider.gmail.presetServer?.host, "imap.gmail.com")
+        XCTAssertEqual(MailProvider.gmail.presetServer?.port, 993)
+        XCTAssertEqual(MailProvider.gmail.appPasswordURL?.absoluteString, "https://myaccount.google.com/apppasswords")
 
         // iCloud
         XCTAssertEqual(MailProvider.icloud.displayName, "iCloud")
-        XCTAssertEqual(MailProvider.icloud.imapHost, "imap.mail.me.com")
-        XCTAssertEqual(MailProvider.icloud.imapPort, 993)
-        XCTAssertEqual(MailProvider.icloud.appPasswordURL.absoluteString, "https://appleid.apple.com/account/manage")
+        XCTAssertEqual(MailProvider.icloud.presetServer?.host, "imap.mail.me.com")
+        XCTAssertEqual(MailProvider.icloud.presetServer?.port, 993)
+        XCTAssertEqual(MailProvider.icloud.appPasswordURL?.absoluteString, "https://appleid.apple.com/account/manage")
 
         // Outlook
         XCTAssertEqual(MailProvider.outlook.displayName, "Outlook")
-        XCTAssertEqual(MailProvider.outlook.imapHost, "outlook.office365.com")
-        XCTAssertEqual(MailProvider.outlook.imapPort, 993)
-        XCTAssertEqual(MailProvider.outlook.appPasswordURL.absoluteString, "https://account.live.com/proofs/AppPassword")
+        XCTAssertEqual(MailProvider.outlook.presetServer?.host, "outlook.office365.com")
+        XCTAssertEqual(MailProvider.outlook.presetServer?.port, 993)
+        XCTAssertEqual(MailProvider.outlook.appPasswordURL?.absoluteString, "https://account.live.com/proofs/AppPassword")
 
         // Yahoo
         XCTAssertEqual(MailProvider.yahoo.displayName, "Yahoo")
-        XCTAssertEqual(MailProvider.yahoo.imapHost, "imap.mail.yahoo.com")
-        XCTAssertEqual(MailProvider.yahoo.imapPort, 993)
-        XCTAssertEqual(MailProvider.yahoo.appPasswordURL.absoluteString, "https://login.yahoo.com/myaccount/security")
+        XCTAssertEqual(MailProvider.yahoo.presetServer?.host, "imap.mail.yahoo.com")
+        XCTAssertEqual(MailProvider.yahoo.presetServer?.port, 993)
+        XCTAssertEqual(MailProvider.yahoo.appPasswordURL?.absoluteString, "https://login.yahoo.com/myaccount/security")
 
         // Fastmail
         XCTAssertEqual(MailProvider.fastmail.displayName, "Fastmail")
-        XCTAssertEqual(MailProvider.fastmail.imapHost, "imap.fastmail.com")
-        XCTAssertEqual(MailProvider.fastmail.imapPort, 993)
-        XCTAssertEqual(MailProvider.fastmail.appPasswordURL.absoluteString, "https://app.fastmail.com/settings/security/apppasswords")
+        XCTAssertEqual(MailProvider.fastmail.presetServer?.host, "imap.fastmail.com")
+        XCTAssertEqual(MailProvider.fastmail.presetServer?.port, 993)
+        XCTAssertEqual(MailProvider.fastmail.appPasswordURL?.absoluteString, "https://app.fastmail.com/settings/security/apppasswords")
     }
 
     func testMailProviderDomains() {
@@ -92,6 +92,36 @@ final class MailProviderTests: XCTestCase {
             let encoded = try JSONEncoder().encode(provider)
             let decoded = try JSONDecoder().decode(MailProvider.self, from: encoded)
             XCTAssertEqual(decoded, provider)
+        }
+    }
+
+    func testPresetsExcludeCustom() {
+        XCTAssertEqual(MailProvider.presets, [.gmail, .icloud, .outlook, .yahoo, .fastmail])
+        XCTAssertTrue(MailProvider.allCases.contains(.custom))
+    }
+
+    func testCustomProviderHasNoPresetServerPortalOrWebmail() {
+        XCTAssertEqual(MailProvider.custom.displayName, "Other (IMAP)")
+        XCTAssertNil(MailProvider.custom.presetServer, "A custom account must never connect to a placeholder")
+        XCTAssertNil(MailProvider.custom.appPasswordURL)
+        XCTAssertNil(MailProvider.custom.webmailURL)
+        XCTAssertTrue(MailProvider.custom.domains.isEmpty)
+    }
+
+    func testDetectionNeverReturnsCustom() {
+        XCTAssertNil(MailProvider.detect(fromEmail: "user@mycompany.com"))
+        for provider in MailProvider.presets {
+            for domain in provider.domains {
+                XCTAssertEqual(MailProvider.detect(fromEmail: "user@\(domain)"), provider)
+            }
+        }
+    }
+
+    func testEveryPresetHasAServerAndLinks() {
+        for provider in MailProvider.presets {
+            XCTAssertNotNil(provider.presetServer)
+            XCTAssertNotNil(provider.appPasswordURL)
+            XCTAssertNotNil(provider.webmailURL)
         }
     }
 }

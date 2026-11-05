@@ -7,17 +7,19 @@ final class NotificationServiceTests: XCTestCase {
     // MARK: - MailProvider Webmail URLs
 
     func testMailProviderWebmailURLs() {
-        XCTAssertEqual(MailProvider.gmail.webmailURL.absoluteString, "https://mail.google.com")
-        XCTAssertEqual(MailProvider.icloud.webmailURL.absoluteString, "https://www.icloud.com/mail")
-        XCTAssertEqual(MailProvider.outlook.webmailURL.absoluteString, "https://outlook.live.com/mail")
-        XCTAssertEqual(MailProvider.yahoo.webmailURL.absoluteString, "https://mail.yahoo.com")
-        XCTAssertEqual(MailProvider.fastmail.webmailURL.absoluteString, "https://app.fastmail.com")
+        XCTAssertEqual(MailProvider.gmail.webmailURL?.absoluteString, "https://mail.google.com")
+        XCTAssertEqual(MailProvider.icloud.webmailURL?.absoluteString, "https://www.icloud.com/mail")
+        XCTAssertEqual(MailProvider.outlook.webmailURL?.absoluteString, "https://outlook.live.com/mail")
+        XCTAssertEqual(MailProvider.yahoo.webmailURL?.absoluteString, "https://mail.yahoo.com")
+        XCTAssertEqual(MailProvider.fastmail.webmailURL?.absoluteString, "https://app.fastmail.com")
 
-        for provider in MailProvider.allCases {
-            XCTAssertFalse(provider.webmailURL.absoluteString.isEmpty)
-            XCTAssertNotNil(provider.webmailURL.scheme)
-            XCTAssertNotNil(provider.webmailURL.host)
+        for provider in MailProvider.presets {
+            XCTAssertEqual(provider.webmailURL?.absoluteString.isEmpty, false)
+            XCTAssertNotNil(provider.webmailURL?.scheme)
+            XCTAssertNotNil(provider.webmailURL?.host)
         }
+        XCTAssertNil(MailProvider.custom.webmailURL)
+        XCTAssertNil(MailProvider.custom.appPasswordURL)
     }
 
     // MARK: - Notification Content Formatting
@@ -112,8 +114,9 @@ final class NotificationServiceTests: XCTestCase {
         let content = NotificationContentBuilder.buildContent(for: event, account: account)
 
         XCTAssertEqual(content.title, "Personal")
-        XCTAssertEqual(content.body, "3 new messages")
+        XCTAssertEqual(content.body, "3 new messages\nFrom: Charlie, Bob, Alice")
         XCTAssertEqual(content.sound, .default)
+        XCTAssertEqual(content.threadIdentifier, NotificationContentBuilder.threadIdentifier(forAccountID: account.id))
 
         guard let uids = content.userInfo[NotificationUserInfoKey.messageUIDs] as? [String] else {
             XCTFail("Missing messageUIDs in userInfo")
@@ -242,6 +245,23 @@ final class NotificationServiceTests: XCTestCase {
         XCTAssertEqual(openedURLs.first, MailProvider.gmail.webmailURL)
     }
 
+    func testNotificationActionRouterOpenInBrowserFallsBackToMailAppForCustomProvider() {
+        var openedURLs: [URL] = []
+        let expectedAppURL = URL(fileURLWithPath: "/System/Applications/Mail.app")
+        let result = NotificationActionRouter.execute(
+            behavior: .openInBrowser,
+            provider: .custom,
+            defaultMailAppURLResolver: { expectedAppURL },
+            urlOpener: { url in
+                openedURLs.append(url)
+                return true
+            }
+        )
+
+        XCTAssertTrue(result, "A custom server has no webmail, so the global browser default must not silently do nothing")
+        XCTAssertEqual(openedURLs, [expectedAppURL])
+    }
+
     func testNotificationActionRouterOpenMailApp() {
         var openedURLs: [URL] = []
         let expectedAppURL = URL(fileURLWithPath: "/System/Applications/Mail.app")
@@ -343,6 +363,7 @@ final class NotificationServiceTests: XCTestCase {
         XCTAssertTrue(content.body.contains("app password"))
         XCTAssertEqual(content.userInfo[NotificationUserInfoKey.accountID] as? String, account.id.uuidString)
         XCTAssertEqual(content.userInfo[NotificationUserInfoKey.kind] as? String, NotificationUserInfoKey.reauthenticationKind)
+        XCTAssertEqual(content.threadIdentifier, "", "A sign-in alert must not fold into the mail stack")
 
         let ordinary = NotificationContentBuilder.buildContent(
             for: NewMailEvent(accountID: account.id, messages: []), account: account
@@ -353,5 +374,84 @@ final class NotificationServiceTests: XCTestCase {
     func testCheckFailedContentPluralisation() {
         XCTAssertTrue(NotificationContentBuilder.buildCheckFailedContent(failedCount: 1).body.contains("1 account."))
         XCTAssertTrue(NotificationContentBuilder.buildCheckFailedContent(failedCount: 3).body.contains("3 accounts"))
+    }
+
+    // MARK: - Grouped notifications
+
+    private func batch(_ senders: [String]) -> [MessageSummary] {
+        senders.enumerated().map { index, from in
+            MessageSummary(uid: UInt32(index + 1), subject: "S", from: from, dateReceived: Date())
+        }
+    }
+
+    func testMultiMessageBodyListsSendersNewestFirst() {
+        XCTAssertEqual(
+            NotificationContentBuilder.formatBody(for: batch(["Alice", "Bob", "Charlie"])),
+            "3 new messages\nFrom: Charlie, Bob, Alice"
+        )
+    }
+
+    func testMultiMessageBodyDedupesCaseInsensitivelyNewestCasingWins() {
+        XCTAssertEqual(
+            NotificationContentBuilder.formatBody(for: batch(["Alice", "Alice", "alice"])),
+            "3 new messages\nFrom: alice"
+        )
+    }
+
+    func testMultiMessageBodyCapsAtThreeSendersAndAddsOthers() {
+        XCTAssertEqual(
+            NotificationContentBuilder.formatBody(for: batch(["A", "B", "C", "D"])),
+            "4 new messages\nFrom: D, C, B and others"
+        )
+    }
+
+    func testMultiMessageBodyMarksUnknownSendersAsOthers() {
+        let senders = Array(repeating: "", count: 15) + Array(repeating: "Alice", count: 5)
+        XCTAssertEqual(
+            NotificationContentBuilder.formatBody(for: batch(senders)),
+            "20 new messages\nFrom: Alice and others"
+        )
+    }
+
+    func testMultiMessageBodyWithNoKnownSenderHasNoFromLine() {
+        XCTAssertEqual(NotificationContentBuilder.formatBody(for: batch(["", "", ""])), "3 new messages")
+    }
+
+    func testMultiMessageBodyFormatsDisplayNames() {
+        XCTAssertEqual(
+            NotificationContentBuilder.formatBody(for: batch(["Bob <bob@x.com>", "Ann <ann@x.com>"])),
+            "2 new messages\nFrom: Ann, Bob"
+        )
+    }
+
+    func testThreadIdentifierSetOnMailAndUnreadContent() {
+        let account = Account(email: "x@gmail.com", provider: .gmail, alias: "Work")
+        let expected = "ding.account.\(account.id.uuidString)"
+        XCTAssertEqual(NotificationContentBuilder.threadIdentifier(forAccountID: account.id), expected)
+
+        let mail = NotificationContentBuilder.buildContent(
+            for: NewMailEvent(accountID: account.id, messages: batch(["A", "B"])), account: account
+        )
+        XCTAssertEqual(mail.threadIdentifier, expected)
+        XCTAssertEqual(NotificationContentBuilder.buildAccountUnreadContent(account: account, unreadCount: 3).threadIdentifier, expected)
+    }
+
+    func testConnectionProblemContentIsTaggedAndNotStacked() {
+        let account = Account(email: "x@gmail.com", provider: .gmail, alias: "Work")
+        let content = NotificationContentBuilder.buildConnectionProblemContent(account: account)
+
+        XCTAssertEqual(content.title, "Work")
+        XCTAssertEqual(content.userInfo[NotificationUserInfoKey.accountID] as? String, account.id.uuidString)
+        XCTAssertEqual(content.userInfo[NotificationUserInfoKey.kind] as? String, NotificationUserInfoKey.connectionProblemKind)
+        XCTAssertNotEqual(NotificationUserInfoKey.connectionProblemKind, NotificationUserInfoKey.reauthenticationKind)
+        XCTAssertEqual(content.threadIdentifier, "", "An outage alert must not fold under a stack of mail")
+    }
+
+    func testReauthenticationWordingFollowsCredentialName() {
+        let preset = Account(email: "x@gmail.com", provider: .gmail)
+        let custom = Account(email: "x@corp.example", provider: .custom, customServer: IMAPServer(host: "mail.corp.example", port: 993))
+
+        XCTAssertTrue(NotificationContentBuilder.buildReauthenticationContent(account: preset).body.hasSuffix("Click to enter a new app password."))
+        XCTAssertTrue(NotificationContentBuilder.buildReauthenticationContent(account: custom).body.hasSuffix("Click to enter a new password."))
     }
 }

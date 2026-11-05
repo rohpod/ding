@@ -41,6 +41,10 @@ import os
 /// indefinitely. A successful login clears a stale flag.
 ///
 /// `reconnectNow()` lets the engine force a fresh connection after the Mac wakes or the network returns.
+///
+/// ## Health
+/// The worker publishes an `AccountHealth` snapshot on `healthUpdates` whenever a check succeeds, the mode changes,
+/// or an attempt fails. Snapshots are complete, so a slow consumer only ever needs the latest one.
 public actor AccountSyncWorker {
     private static let logger = Logger(subsystem: DingLog.subsystem, category: "AccountSyncWorker")
 
@@ -58,6 +62,11 @@ public actor AccountSyncWorker {
     private let defaultSyncFrequency: SyncFrequency
     private let idleRefreshDuration: Duration
     private let backoffJitter: @Sendable () -> Double
+    private let now: @Sendable () -> Date
+    private let healthContinuation: AsyncStream<AccountHealth>.Continuation
+
+    /// Snapshots of this account's health, newest last. Buffers only the latest snapshot.
+    public nonisolated let healthUpdates: AsyncStream<AccountHealth>
 
     private let wakeSignal = WakeSignal()
 
@@ -67,6 +76,11 @@ public actor AccountSyncWorker {
     private var currentRetryCount: Int = 0
     private var consecutiveLoginRejections: Int = 0
     private var hasClearedReauthenticationFlag: Bool = false
+    private var health = AccountHealth()
+
+    /// Set by `reconnectNow()`, which deliberately drops the connection. The resulting `.notConnected` error is
+    /// ours, not a real failure, so it must not count against the account's health.
+    private var isReconnectPending: Bool = false
 
     /// Number of back-to-back ambiguous login rejections (a bare `NO`/`BAD`) tolerated before the account is
     /// flagged as needing a new password.
@@ -91,8 +105,8 @@ public actor AccountSyncWorker {
         let client = manualCheckClientFactory()
         do {
             let password = try await passwordProvider(account.id)
-            try await client.connect(host: account.provider.imapHost, port: account.provider.imapPort)
-            try await client.login(email: account.email, password: password)
+            try await client.connect(host: account.server.host, port: account.server.port)
+            try await client.login(email: account.loginName, password: password)
             let count = try await client.fetchUnreadCount()
             await client.disconnect()
             return count
@@ -110,13 +124,14 @@ public actor AccountSyncWorker {
     ///   - manualCheckClientFactory: Produces the dedicated client used for manual unread checks. Defaults to `NIOIMAPClient()`.
     ///   - syncStateStore: Disk store for UID tracking. Defaults to `SyncStateStore.shared`.
     ///   - defaultSyncFrequency: Global fallback frequency. Defaults to `AppPreferences.shared.defaultSyncFrequency`.
-    ///   - idleRefreshDuration: Inactivity duration before re-issuing IDLE. Defaults to 28 minutes.
+    ///   - idleRefreshDuration: Inactivity duration before re-issuing IDLE. Defaults to 10 minutes.
     ///   - passwordProvider: Async closure retrieving the decrypted password from Keychain.
     ///   - reauthenticationHandler: Closure invoked when authentication fails.
     ///   - authenticationRecoveredHandler: Closure invoked when a previously flagged account logs in successfully.
     ///   - sleepProvider: Timing closure for async delays (injected in unit tests).
     ///   - backoffJitter: Returns a fraction in `0...1` added on top of each backoff delay. Defaults to random 0-20%.
     ///   - onNewMail: Callback invoked when new messages are detected.
+    ///   - now: Supplies the current time for health timestamps (injected in unit tests). Defaults to `Date()`.
     public init(
         account: Account,
         imapClient: (any IMAPConnecting)? = nil,
@@ -129,7 +144,8 @@ public actor AccountSyncWorker {
         authenticationRecoveredHandler: (@Sendable (UUID) async -> Void)? = nil,
         sleepProvider: (@Sendable (Duration) async throws -> Void)? = nil,
         backoffJitter: (@Sendable () -> Double)? = nil,
-        onNewMail: (@Sendable (NewMailEvent) -> Void)? = nil
+        onNewMail: (@Sendable (NewMailEvent) -> Void)? = nil,
+        now: (@Sendable () -> Date)? = nil
     ) {
         self.account = account
         self.imapClient = imapClient ?? NIOIMAPClient()
@@ -164,10 +180,16 @@ public actor AccountSyncWorker {
 
         self.backoffJitter = backoffJitter ?? { Double.random(in: 0...0.2) }
         self.onNewMail = onNewMail
+        self.now = now ?? { Date() }
+
+        var continuation: AsyncStream<AccountHealth>.Continuation!
+        self.healthUpdates = AsyncStream(bufferingPolicy: .bufferingNewest(1)) { continuation = $0 }
+        self.healthContinuation = continuation
     }
 
     deinit {
         syncTask?.cancel()
+        healthContinuation.finish()
     }
 
     /// Starts the background synchronization loop for this account.
@@ -176,6 +198,7 @@ public actor AccountSyncWorker {
         isRunning = true
         Self.logger.info("Starting sync worker for account \(self.account.id.uuidString, privacy: .public)")
 
+        publishHealth()
         syncTask = Task { [weak self] in
             await self?.runLoop()
         }
@@ -189,6 +212,7 @@ public actor AccountSyncWorker {
         guard isRunning else { return }
         Self.logger.info("Reconnect requested for account \(self.account.id.uuidString, privacy: .public)")
         currentRetryCount = 0
+        isReconnectPending = true
         wakeSignal.signal()
         await imapClient.disconnect()
     }
@@ -213,10 +237,11 @@ public actor AccountSyncWorker {
                 let effectiveFrequency = resolveEffectiveFrequency()
                 let password = try await passwordProvider(account.id)
 
-                Self.logger.debug("Connecting to \(self.account.provider.imapHost, privacy: .public):\(self.account.provider.imapPort, privacy: .public)")
-                try await imapClient.connect(host: account.provider.imapHost, port: account.provider.imapPort)
+                // A custom host is the user's own domain, so it is not logged publicly.
+                Self.logger.debug("Connecting to \(self.account.server.host, privacy: .private):\(self.account.server.port, privacy: .public)")
+                try await imapClient.connect(host: account.server.host, port: account.server.port)
 
-                try await imapClient.login(email: account.email, password: password)
+                try await imapClient.login(email: account.loginName, password: password)
                 consecutiveLoginRejections = 0
                 await clearReauthenticationFlagIfNeeded()
                 let mailboxStatus = try await imapClient.selectInbox()
@@ -257,6 +282,12 @@ public actor AccountSyncWorker {
                 await imapClient.disconnect()
                 guard isRunning && !Task.isCancelled else { break }
 
+                if isReconnectPending {
+                    isReconnectPending = false
+                } else {
+                    recordFailure(error)
+                }
+
                 if let imapError = error as? IMAPClientError, case .loginRejected = imapError {
                     consecutiveLoginRejections += 1
                     if consecutiveLoginRejections >= Self.maxConsecutiveLoginRejections {
@@ -269,7 +300,7 @@ public actor AccountSyncWorker {
                 }
 
                 let backoffDelay = computeBackoffDelay()
-                Self.logger.warning("Sync error for account \(self.account.id.uuidString, privacy: .public): \(error.localizedDescription, privacy: .public). Retrying in \(Int(backoffDelay.components.seconds))s (attempt #\(self.currentRetryCount))")
+                Self.logger.warning("Sync error for account \(self.account.id.uuidString, privacy: .public): \(error.localizedDescription, privacy: .private). Retrying in \(Int(backoffDelay.components.seconds))s (attempt #\(self.currentRetryCount))")
                 currentRetryCount += 1
 
                 do {
@@ -304,6 +335,8 @@ public actor AccountSyncWorker {
             currentRetryCount = 0 // A full connect + fetch cycle succeeded: reset backoff
 
             let stream = try await imapClient.startIdle()
+            health.connection = .push
+            publishHealth()
 
             // Run IDLE stream with a refresh timer and wake signal
             try await withThrowingTaskGroup(of: Void.self) { group in
@@ -354,6 +387,11 @@ public actor AccountSyncWorker {
         } else {
             interval = .seconds(60)
         }
+
+        // Set before the fetch so a failing poll reports the right mode. Not `.connecting`, which would make the
+        // status flicker on every cycle.
+        health.connection = .polling(intervalSeconds: Int(interval.components.seconds), idleUnsupported: frequency == .always)
+        publishHealth()
 
         // 1. Fetch any new messages immediately
         try await fetchAndEmitNewMail()
@@ -452,6 +490,7 @@ public actor AccountSyncWorker {
 
         Self.logger.debug("Checking for new messages arriving after UID \(self.lastSeenUID, privacy: .public)")
         let messages = try await imapClient.fetchNewMessages(sinceUID: self.lastSeenUID)
+        recordSuccess()
 
         guard !messages.isEmpty else {
             Self.logger.debug("No new messages found")
@@ -478,6 +517,29 @@ public actor AccountSyncWorker {
         Self.logger.info("Detected \(messages.count, privacy: .public) new message(s) for account \(self.account.id.uuidString, privacy: .public). Highest UID is now \(self.lastSeenUID, privacy: .public).")
         let event = NewMailEvent(accountID: account.id, messages: messages)
         onNewMail?(event)
+    }
+
+    // MARK: - Health
+
+    /// Records a completed connect-and-fetch, whether or not it found mail. This one place covers IDLE entry,
+    /// each IDLE refresh, new-mail fetches and polls.
+    private func recordSuccess() {
+        isReconnectPending = false
+        health.lastSuccessfulCheck = now()
+        health.consecutiveFailures = 0
+        health.lastErrorMessage = nil
+        publishHealth()
+    }
+
+    private func recordFailure(_ error: Error) {
+        health.consecutiveFailures += 1
+        health.connection = .retrying
+        health.lastErrorMessage = error.localizedDescription
+        publishHealth()
+    }
+
+    private func publishHealth() {
+        healthContinuation.yield(health)
     }
 
     // MARK: - Helpers

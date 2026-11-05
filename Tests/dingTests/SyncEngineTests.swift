@@ -802,4 +802,290 @@ final class SyncEngineTests: XCTestCase {
 
         XCTAssertEqual(notifications, [.checkFailed(accountCount: 1)])
     }
+
+    // MARK: - Account health
+
+    /// Waits for a main-actor condition with a deadline rather than a fixed sleep.
+    @MainActor
+    private func waitUntil(timeout: TimeInterval = 5, _ condition: () -> Bool) async throws -> Bool {
+        let deadline = Date().addingTimeInterval(timeout)
+        while Date() < deadline {
+            if condition() { return true }
+            try await Task.sleep(nanoseconds: 5_000_000)
+        }
+        return condition()
+    }
+
+    @MainActor
+    func testRestartedWorkerKeepsPreviousLastSuccessfulCheck() async throws {
+        let manager = AccountManager(accountStore: testStore, keychainService: mockKeychain)
+        let account = try manager.addAccount(email: "restart@gmail.com", provider: .gmail, appPassword: "pwd")
+        let syncStore = self.syncStore!
+        let firstCheck = Date(timeIntervalSince1970: 1_800_000_000)
+
+        let healthyClient = FakeIMAPClient()
+        let failingClient = FakeIMAPClient(connectError: .timeout)
+        let creations = LockProtected<Int>(0)
+
+        let engine = SyncEngine(
+            accountManager: manager,
+            workerFactory: { account, onNewMail in
+                let isFirst = creations.withLock { count -> Bool in count += 1; return count == 1 }
+                let client = isFirst ? healthyClient : failingClient
+                return AccountSyncWorker(
+                    account: account,
+                    imapClient: client,
+                    manualCheckClientFactory: { client },
+                    syncStateStore: syncStore,
+                    defaultSyncFrequency: .fiveMinutes,
+                    passwordProvider: { _ in "pwd" },
+                    sleepProvider: { _ in try await Task.sleep(nanoseconds: 5_000_000) },
+                    backoffJitter: { 0 },
+                    onNewMail: onNewMail,
+                    now: { firstCheck }
+                )
+            }
+        )
+        engine.start()
+        defer { engine.stop() }
+
+        let recorded = try await waitUntil { engine.accountHealth[account.id]?.lastSuccessfulCheck == firstCheck }
+        XCTAssertTrue(recorded)
+
+        var changed = account
+        changed.syncFrequency = .fifteenMinutes
+        try manager.updateAccount(changed)
+
+        let restarted = try await waitUntil { (engine.accountHealth[account.id]?.consecutiveFailures ?? 0) > 0 }
+        XCTAssertTrue(restarted, "The replacement worker should have reported its failures")
+        XCTAssertEqual(
+            engine.accountHealth[account.id]?.lastSuccessfulCheck, firstCheck,
+            "A restart must not erase the history of the last successful check"
+        )
+    }
+
+    @MainActor
+    func testRemovingAccountClearsItsHealth() async throws {
+        let manager = AccountManager(accountStore: testStore, keychainService: mockKeychain)
+        let account = try manager.addAccount(email: "gone@gmail.com", provider: .gmail, appPassword: "pwd")
+        let syncStore = self.syncStore!
+
+        let engine = SyncEngine(
+            accountManager: manager,
+            workerFactory: { account, onNewMail in
+                AccountSyncWorker(
+                    account: account,
+                    imapClient: FakeIMAPClient(),
+                    manualCheckClientFactory: { FakeIMAPClient() },
+                    syncStateStore: syncStore,
+                    defaultSyncFrequency: .fiveMinutes,
+                    passwordProvider: { _ in "pwd" },
+                    sleepProvider: { _ in try await Task.sleep(nanoseconds: 5_000_000) },
+                    onNewMail: onNewMail
+                )
+            }
+        )
+        engine.start()
+        defer { engine.stop() }
+
+        let seen = try await waitUntil { engine.accountHealth[account.id] != nil }
+        XCTAssertTrue(seen)
+
+        try manager.removeAccount(id: account.id)
+        XCTAssertNil(engine.accountHealth[account.id])
+
+        // A late snapshot from the removed worker must not bring the entry back.
+        try await Task.sleep(nanoseconds: 50_000_000)
+        XCTAssertNil(engine.accountHealth[account.id])
+    }
+
+    @MainActor
+    func testStopClearsHealth() async throws {
+        let manager = AccountManager(accountStore: testStore, keychainService: mockKeychain)
+        let account = try manager.addAccount(email: "stop@gmail.com", provider: .gmail, appPassword: "pwd")
+        let syncStore = self.syncStore!
+
+        let engine = SyncEngine(
+            accountManager: manager,
+            workerFactory: { account, onNewMail in
+                AccountSyncWorker(
+                    account: account,
+                    imapClient: FakeIMAPClient(),
+                    manualCheckClientFactory: { FakeIMAPClient() },
+                    syncStateStore: syncStore,
+                    defaultSyncFrequency: .fiveMinutes,
+                    passwordProvider: { _ in "pwd" },
+                    sleepProvider: { _ in try await Task.sleep(nanoseconds: 5_000_000) },
+                    onNewMail: onNewMail
+                )
+            }
+        )
+        engine.start()
+        let seen = try await waitUntil { engine.accountHealth[account.id] != nil }
+        XCTAssertTrue(seen)
+
+        engine.stop()
+        XCTAssertTrue(engine.accountHealth.isEmpty)
+    }
+
+    @MainActor
+    func testConnectionProblemsAreHiddenWhileOffline() async throws {
+        let manager = AccountManager(accountStore: testStore, keychainService: mockKeychain)
+        let failing = try manager.addAccount(email: "down@gmail.com", provider: .gmail, appPassword: "pwd")
+        let flagged = try manager.addAccount(email: "flagged@gmail.com", provider: .gmail, appPassword: "pwd")
+        try manager.setNeedsReauthentication(forAccountID: flagged.id, needsReauthentication: true)
+        let syncStore = self.syncStore!
+        let monitor = ConnectivityMonitor(debounce: .milliseconds(20))
+
+        let engine = SyncEngine(
+            accountManager: manager,
+            connectivityMonitor: monitor,
+            workerFactory: { account, onNewMail in
+                let client = FakeIMAPClient(connectError: .timeout)
+                return AccountSyncWorker(
+                    account: account,
+                    imapClient: client,
+                    manualCheckClientFactory: { client },
+                    syncStateStore: syncStore,
+                    defaultSyncFrequency: .fiveMinutes,
+                    passwordProvider: { _ in "pwd" },
+                    sleepProvider: { _ in try await Task.sleep(nanoseconds: 5_000_000) },
+                    backoffJitter: { 0 },
+                    onNewMail: onNewMail
+                )
+            }
+        )
+        engine.start()
+        defer { engine.stop() }
+        // Silence the real path monitor so only the updates below drive availability.
+        monitor.stop()
+        try await Task.sleep(nanoseconds: 100_000_000)
+        monitor.onNetworkAvailabilityChanged?(true)
+
+        let degraded = try await waitUntil { engine.accountsWithConnectionProblems.contains { $0.id == failing.id } }
+        XCTAssertTrue(degraded)
+        XCTAssertEqual(engine.allAccounts.count, 2)
+        XCTAssertFalse(
+            engine.accountsWithConnectionProblems.contains { $0.id == flagged.id },
+            "An account awaiting a password has its own prompt"
+        )
+
+        monitor.handlePathUpdate(status: .unsatisfied)
+        XCTAssertFalse(engine.isNetworkAvailable)
+        XCTAssertTrue(engine.accountsWithConnectionProblems.isEmpty, "While offline, only the Offline state is shown")
+
+        monitor.handlePathUpdate(status: .satisfied)
+        XCTAssertTrue(engine.isNetworkAvailable)
+        XCTAssertTrue(engine.accountsWithConnectionProblems.contains { $0.id == failing.id })
+    }
+
+    // MARK: - Sustained-failure notification
+
+    @MainActor
+    private final class TestClock {
+        var date = Date(timeIntervalSince1970: 1_800_000_000)
+    }
+
+    /// An engine with one account whose fake server is healthy until the test makes it fail, plus the means to
+    /// drive network availability and time deterministically.
+    @MainActor
+    private func makeFailureHarness() async throws -> (
+        engine: SyncEngine, client: FakeIMAPClient, monitor: ConnectivityMonitor, clock: TestClock,
+        account: Account, notified: LockProtected<Int>
+    ) {
+        let manager = AccountManager(accountStore: testStore, keychainService: mockKeychain)
+        let account = try manager.addAccount(email: "outage@gmail.com", provider: .gmail, appPassword: "pwd")
+        let syncStore = self.syncStore!
+        let client = FakeIMAPClient()
+        let monitor = ConnectivityMonitor(debounce: .milliseconds(20))
+        let clock = TestClock()
+        let notified = LockProtected<Int>(0)
+
+        let engine = SyncEngine(
+            accountManager: manager,
+            connectivityMonitor: monitor,
+            workerFactory: { account, onNewMail in
+                AccountSyncWorker(
+                    account: account,
+                    imapClient: client,
+                    manualCheckClientFactory: { client },
+                    syncStateStore: syncStore,
+                    defaultSyncFrequency: .fiveMinutes,
+                    passwordProvider: { _ in "pwd" },
+                    sleepProvider: { _ in try await Task.sleep(nanoseconds: 3_000_000) },
+                    backoffJitter: { 0 },
+                    onNewMail: onNewMail
+                )
+            },
+            now: { clock.date }
+        )
+        engine.onConnectionProblemNotification = { _ in notified.withLock { $0 += 1 } }
+        engine.start()
+        // Silence the real path monitor so only the updates a test sends drive availability.
+        monitor.stop()
+        try await Task.sleep(nanoseconds: 100_000_000)
+        monitor.handlePathUpdate(status: .satisfied)
+
+        let healthy = try await waitUntil { engine.accountHealth[account.id]?.lastSuccessfulCheck != nil }
+        XCTAssertTrue(healthy)
+        return (engine, client, monitor, clock, account, notified)
+    }
+
+    @MainActor
+    func testSustainedFailureNotifiesOncePerOutage() async throws {
+        let h = try await makeFailureHarness()
+        defer { h.engine.stop() }
+
+        await h.client.setConnectError(.timeout)
+        let threshold = AccountHealth.notificationThreshold
+        let fired = try await waitUntil { h.notified.get() == 1 }
+        XCTAssertTrue(fired)
+
+        // Keep failing well past the threshold: still only one notification.
+        let kept = try await waitUntil { (h.engine.accountHealth[h.account.id]?.consecutiveFailures ?? 0) >= threshold + 6 }
+        XCTAssertTrue(kept)
+        XCTAssertEqual(h.notified.get(), 1)
+    }
+
+    @MainActor
+    func testNotificationRearmsAfterRecovery() async throws {
+        let h = try await makeFailureHarness()
+        defer { h.engine.stop() }
+
+        await h.client.setConnectError(.timeout)
+        let first = try await waitUntil { h.notified.get() == 1 }
+        XCTAssertTrue(first)
+
+        await h.client.setConnectError(nil)
+        let recovered = try await waitUntil { h.engine.accountHealth[h.account.id]?.consecutiveFailures == 0 }
+        XCTAssertTrue(recovered)
+
+        await h.client.setConnectError(.timeout)
+        let second = try await waitUntil { h.notified.get() == 2 }
+        XCTAssertTrue(second, "A new outage after recovery should notify again")
+    }
+
+    @MainActor
+    func testNotificationSuppressedWhileOfflineAndDuringGracePeriod() async throws {
+        let h = try await makeFailureHarness()
+        defer { h.engine.stop() }
+        let threshold = AccountHealth.notificationThreshold
+
+        h.monitor.handlePathUpdate(status: .unsatisfied)
+        await h.client.setConnectError(.timeout)
+        let failedOffline = try await waitUntil { (h.engine.accountHealth[h.account.id]?.consecutiveFailures ?? 0) >= threshold + 2 }
+        XCTAssertTrue(failedOffline)
+        XCTAssertEqual(h.notified.get(), 0, "Failures while offline are explained by being offline")
+
+        // The network returns, but the workers have not had time to reconnect yet.
+        h.monitor.handlePathUpdate(status: .satisfied)
+        let stillFailing = try await waitUntil { (h.engine.accountHealth[h.account.id]?.consecutiveFailures ?? 0) >= threshold + 8 }
+        XCTAssertTrue(stillFailing)
+        XCTAssertEqual(h.notified.get(), 0, "The grace period after the network returns must stay quiet")
+
+        // Past the grace period, a persistent failure is a real problem.
+        h.clock.date = h.clock.date.addingTimeInterval(6 * 60)
+        let fired = try await waitUntil { h.notified.get() == 1 }
+        XCTAssertTrue(fired)
+    }
 }

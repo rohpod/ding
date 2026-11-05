@@ -1,20 +1,26 @@
 import Foundation
 
-/// Preset mail providers supported by ding.
+/// Mail providers supported by ding: five presets and a custom IMAP server.
 ///
-/// ## Hardcoded Preset Decision (v1 Architecture)
-/// In ding v1, mail providers are deliberately restricted to these 5 hardcoded presets:
-/// Gmail, iCloud, Outlook, Yahoo, and Fastmail. Generic IMAP host/port/security configuration
-/// is explicitly out of scope for v1 to maximize simplicity, reliability, and security.
+/// ## Presets and the Custom Option
+/// Each preset (Gmail, iCloud, Outlook, Yahoo, Fastmail) encapsulates a tested, known-good IMAP server, domain
+/// mappings, and direct links to the provider's security portal where users can generate an App Password.
 ///
-/// Each preset encapsulates tested, known-good IMAP configuration parameters, domain mappings,
-/// and direct links to provider security management portals where users can generate App Passwords.
+/// `.custom` covers everything else: Workspace and other custom domains, regional providers, self-hosted servers.
+/// It has no preset server, so the server lives on the `Account` itself. Only implicit TLS with a trusted
+/// certificate and password login are supported, which keeps the security story the same as for presets.
 public enum MailProvider: String, CaseIterable, Codable, Sendable {
     case gmail
     case icloud
     case outlook
     case yahoo
     case fastmail
+    case custom
+
+    /// The providers with a built-in server, in picker order. Excludes `.custom`.
+    public static var presets: [MailProvider] {
+        allCases.filter { $0 != .custom }
+    }
 
     /// The user-facing display name of the mail provider.
     public var displayName: String {
@@ -29,38 +35,32 @@ public enum MailProvider: String, CaseIterable, Codable, Sendable {
             return "Yahoo"
         case .fastmail:
             return "Fastmail"
+        case .custom:
+            return "Other (IMAP)"
         }
     }
 
-    /// The fully qualified domain name (FQDN) of the provider's IMAP server.
-    public var imapHost: String {
+    /// The built-in IMAP server (implicit TLS on port 993), or `nil` for `.custom`, whose server is per account.
+    public var presetServer: IMAPServer? {
         switch self {
         case .gmail:
-            return "imap.gmail.com"
+            return IMAPServer(host: "imap.gmail.com", port: 993)
         case .icloud:
-            return "imap.mail.me.com"
+            return IMAPServer(host: "imap.mail.me.com", port: 993)
         case .outlook:
-            return "outlook.office365.com"
+            return IMAPServer(host: "outlook.office365.com", port: 993)
         case .yahoo:
-            return "imap.mail.yahoo.com"
+            return IMAPServer(host: "imap.mail.yahoo.com", port: 993)
         case .fastmail:
-            return "imap.fastmail.com"
-        }
-    }
-
-    /// The network port for IMAP over SSL/TLS.
-    ///
-    /// Port 993 is universally used for implicit TLS across all supported presets,
-    /// but is kept explicit per-provider for future configuration flexibility.
-    public var imapPort: Int {
-        switch self {
-        case .gmail, .icloud, .outlook, .yahoo, .fastmail:
-            return 993
+            return IMAPServer(host: "imap.fastmail.com", port: 993)
+        case .custom:
+            return nil
         }
     }
 
     /// Direct URL to the provider's account security portal where users can generate an App Password.
-    public var appPasswordURL: URL {
+    /// `nil` for `.custom`, which has no known portal.
+    public var appPasswordURL: URL? {
         let urlString: String
         switch self {
         case .gmail:
@@ -73,6 +73,8 @@ public enum MailProvider: String, CaseIterable, Codable, Sendable {
             urlString = "https://login.yahoo.com/myaccount/security"
         case .fastmail:
             urlString = "https://app.fastmail.com/settings/security/apppasswords"
+        case .custom:
+            return nil
         }
         // Force-unwrap justified: URLs are known static compile-time constants.
         return URL(string: urlString)!
@@ -82,7 +84,8 @@ public enum MailProvider: String, CaseIterable, Codable, Sendable {
     ///
     /// Note: Deep-linking to the exact message varies by provider and is not implemented in v1;
     /// this opens the provider's general webmail portal without forcing specific user accounts or mailbox folders.
-    public var webmailURL: URL {
+    /// `nil` for `.custom`, which has no known webmail.
+    public var webmailURL: URL? {
         let urlString: String
         switch self {
         case .gmail:
@@ -95,6 +98,8 @@ public enum MailProvider: String, CaseIterable, Codable, Sendable {
             urlString = "https://mail.yahoo.com"
         case .fastmail:
             urlString = "https://app.fastmail.com"
+        case .custom:
+            return nil
         }
         // Force-unwrap justified: URLs are known static compile-time constants.
         return URL(string: urlString)!
@@ -113,14 +118,16 @@ public enum MailProvider: String, CaseIterable, Codable, Sendable {
             return ["yahoo.com", "ymail.com"]
         case .fastmail:
             return ["fastmail.com"]
+        case .custom:
+            return []
         }
     }
 
     /// Detects the matching mail provider for a given email address based on its domain.
     ///
     /// - Parameter email: The candidate email address entered by the user.
-    /// - Returns: The matched `MailProvider`, or `nil` if the domain does not match any known presets
-    ///   or if the email format is invalid (indicating an unsupported provider in v1).
+    /// - Returns: The matched preset, or `nil` if the domain does not match any (the user then picks a provider
+    ///   or enters a custom server) or if the email format is invalid.
     public static func detect(fromEmail email: String) -> MailProvider? {
         let cleaned = email.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
         let parts = cleaned.split(separator: "@", omittingEmptySubsequences: false)
@@ -129,7 +136,7 @@ public enum MailProvider: String, CaseIterable, Codable, Sendable {
         }
         let domain = String(parts[1])
 
-        return Self.allCases.first { provider in
+        return Self.presets.first { provider in
             provider.domains.contains(domain)
         }
     }

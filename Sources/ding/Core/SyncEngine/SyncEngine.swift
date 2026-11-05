@@ -44,6 +44,9 @@ public final class SyncEngine: ObservableObject {
     /// Callback invoked whenever any managed account worker detects new mail.
     public var onNewMailDetected: ((NewMailEvent) -> Void)?
 
+    /// Callback invoked when an account has been unreachable long enough to notify the user (injectable for unit testing).
+    public var onConnectionProblemNotification: ((Account) -> Void)?
+
     /// Callback invoked whenever a manual mail check produces a notification (injectable for unit testing).
     public var onManualCheckNotification: ((ManualCheckNotification) -> Void)?
 
@@ -53,9 +56,32 @@ public final class SyncEngine: ObservableObject {
     /// Indicates whether the sync engine is active.
     @Published public private(set) var isRunning: Bool = false
 
+    /// The latest health of each account's worker. In memory only; a restarted worker keeps its predecessor's
+    /// `lastSuccessfulCheck` until it records one of its own.
+    @Published public private(set) var accountHealth: [UUID: AccountHealth] = [:]
+
+    /// Whether the network is currently usable, as last reported by the connectivity monitor.
+    @Published public private(set) var isNetworkAvailable: Bool = true
+
     /// Accounts whose credentials were rejected and that need a new app password before syncing can resume.
     public var accountsNeedingAttention: [Account] {
         accountManager.accounts.filter { $0.needsReauthentication }
+    }
+
+    /// Every configured account, including those excluded from manual checks.
+    public var allAccounts: [Account] {
+        accountManager.accounts
+    }
+
+    /// Accounts that could not connect for long enough to warrant a warning.
+    ///
+    /// Empty while the network is down, since "offline" explains every failure and is shown on its own. Accounts
+    /// awaiting a new password are excluded because they have their own, more specific prompt.
+    public var accountsWithConnectionProblems: [Account] {
+        guard isNetworkAvailable else { return [] }
+        return accountManager.accounts.filter { account in
+            !account.needsReauthentication && accountHealth[account.id]?.isDegraded == true
+        }
     }
 
     /// The list of configured accounts that have manual checking enabled.
@@ -73,6 +99,18 @@ public final class SyncEngine: ObservableObject {
     private var eventContinuations: [UUID: AsyncStream<NewMailEvent>.Continuation] = [:]
     private var registeredShortcutAccountIDs = Set<UUID>()
     private var restartTasks: [UUID: Task<Void, Never>] = [:]
+    private var healthTasks: [UUID: Task<Void, Never>] = [:]
+    private let now: @MainActor () -> Date
+
+    /// Accounts already notified about their current outage; re-armed when the account recovers.
+    private var connectionProblemNotified = Set<UUID>()
+
+    /// When the network last came back, so failures that built up while offline don't raise a false alarm
+    /// before the workers have had time to reconnect.
+    private var lastNetworkRestoredAt: Date?
+
+    /// How long after the network returns before a connection-problem notification may fire.
+    private static let networkRestoredGracePeriod: TimeInterval = 5 * 60
 
     /// The global default frequency as last observed. Tracked here (rather than re-read from `appPreferences`)
     /// because `@Published` publishes in `willSet`, before the stored property holds the new value.
@@ -92,13 +130,16 @@ public final class SyncEngine: ObservableObject {
     ///   - notificationService: Notification delivery service. Defaults to `NotificationService.shared`.
     ///   - connectivityMonitor: Sleep/wake and network change detector. Defaults to a live monitor.
     ///   - workerFactory: Factory closure for generating account workers (injected in unit tests).
+    ///   - now: Supplies the current time for the connection-problem grace period (injected in unit tests).
     init(
         accountManager: AccountManager = .shared,
         appPreferences: AppPreferences = .shared,
         notificationService: NotificationService = .shared,
         connectivityMonitor: ConnectivityMonitor? = nil,
-        workerFactory: WorkerFactory? = nil
+        workerFactory: WorkerFactory? = nil,
+        now: (@MainActor () -> Date)? = nil
     ) {
+        self.now = now ?? { Date() }
         self.connectivityMonitor = connectivityMonitor ?? ConnectivityMonitor()
         self.accountManager = accountManager
         self.appPreferences = appPreferences
@@ -128,6 +169,9 @@ public final class SyncEngine: ObservableObject {
         // Reconnect promptly after sleep or a network change
         connectivityMonitor.onReconnectNeeded = { [weak self] in
             self?.reconnectAllWorkers()
+        }
+        connectivityMonitor.onNetworkAvailabilityChanged = { [weak self] isAvailable in
+            self?.setNetworkAvailable(isAvailable)
         }
         connectivityMonitor.start()
 
@@ -189,6 +233,12 @@ public final class SyncEngine: ObservableObject {
             Self.logger.debug("Tore down worker for account: \(id.uuidString, privacy: .public)")
         }
         workers.removeAll()
+        for (_, task) in healthTasks {
+            task.cancel()
+        }
+        healthTasks.removeAll()
+        accountHealth.removeAll()
+        connectionProblemNotified.removeAll()
         resolvedFrequencies.removeAll()
         lastReauthFlags.removeAll()
 
@@ -248,7 +298,7 @@ public final class SyncEngine: ObservableObject {
                 await deliverAccountUnreadNotification(account: account, count: count)
             }
         } catch {
-            Self.logger.error("Failed to check unread count for account \(accountID.uuidString, privacy: .public): \(error.localizedDescription, privacy: .public)")
+            Self.logger.error("Failed to check unread count for account \(accountID.uuidString, privacy: .public): \(error.localizedDescription, privacy: .private)")
             await deliverCheckFailedNotification(failedCount: 1)
         }
     }
@@ -278,7 +328,7 @@ public final class SyncEngine: ObservableObject {
                             let count = try await worker.checkUnreadCount()
                             return (account, count)
                         } catch {
-                            Self.logger.error("Failed to check unread count for account \(account.id.uuidString, privacy: .public): \(error.localizedDescription, privacy: .public)")
+                            Self.logger.error("Failed to check unread count for account \(account.id.uuidString, privacy: .public): \(error.localizedDescription, privacy: .private)")
                             return nil
                         }
                     }
@@ -350,6 +400,9 @@ public final class SyncEngine: ObservableObject {
         let removedIDs = existingIDs.subtracting(currentIDs)
         for id in removedIDs {
             restartTasks.removeValue(forKey: id)?.cancel()
+            healthTasks.removeValue(forKey: id)?.cancel()
+            accountHealth.removeValue(forKey: id)
+            connectionProblemNotified.remove(id)
             resolvedFrequencies.removeValue(forKey: id)
             lastReauthFlags.removeValue(forKey: id)
             if let worker = workers.removeValue(forKey: id) {
@@ -442,11 +495,70 @@ public final class SyncEngine: ObservableObject {
     }
 
     private func createWorker(for account: Account) -> AccountSyncWorker {
-        workerFactory(account) { [weak self] event in
+        let worker = workerFactory(account) { [weak self] event in
             Task { @MainActor [weak self] in
                 self?.handleNewMailEvent(event)
             }
         }
+        observeHealth(of: worker, accountID: account.id)
+        return worker
+    }
+
+    /// Mirrors a worker's health snapshots into `accountHealth`, replacing any earlier observation for the account.
+    ///
+    /// Cancelling the previous task also cuts off a replaced worker's late updates. Only the stream is captured,
+    /// so the task does not keep the worker alive.
+    private func observeHealth(of worker: AccountSyncWorker, accountID: UUID) {
+        healthTasks[accountID]?.cancel()
+        let updates = worker.healthUpdates
+        healthTasks[accountID] = Task { @MainActor [weak self] in
+            for await update in updates {
+                guard !Task.isCancelled, let self else { return }
+                self.receiveHealth(update, accountID: accountID)
+            }
+        }
+    }
+
+    private func receiveHealth(_ update: AccountHealth, accountID: UUID) {
+        var merged = update
+        // A restart creates a worker whose first snapshot has no history; that must not erase the last check.
+        merged.lastSuccessfulCheck = update.lastSuccessfulCheck ?? accountHealth[accountID]?.lastSuccessfulCheck
+        accountHealth[accountID] = merged
+        evaluateConnectionProblemNotification(for: accountID, health: merged)
+    }
+
+    private func setNetworkAvailable(_ isAvailable: Bool) {
+        if isAvailable && !isNetworkAvailable {
+            lastNetworkRestoredAt = now()
+        }
+        isNetworkAvailable = isAvailable
+    }
+
+    /// Notifies once per outage when an account has failed for long enough that the user must be told.
+    ///
+    /// This is the only signal when the menu bar icon is hidden. It stays quiet while the network is down and for a
+    /// grace period after it returns, because workers that failed through the outage have not reconnected yet.
+    private func evaluateConnectionProblemNotification(for accountID: UUID, health: AccountHealth) {
+        guard health.consecutiveFailures > 0 else {
+            connectionProblemNotified.remove(accountID)
+            return
+        }
+        guard health.consecutiveFailures >= AccountHealth.notificationThreshold,
+              !connectionProblemNotified.contains(accountID),
+              isNetworkAvailable,
+              !isInNetworkRestoredGracePeriod,
+              let account = accountManager.accounts.first(where: { $0.id == accountID }),
+              !account.needsReauthentication else { return }
+
+        connectionProblemNotified.insert(accountID)
+        Self.logger.warning("Account \(accountID.uuidString, privacy: .public) has been unreachable for \(health.consecutiveFailures, privacy: .public) attempts; notifying")
+        onConnectionProblemNotification?(account)
+        Task { await notificationService.sendConnectionProblemNotification(account: account) }
+    }
+
+    private var isInNetworkRestoredGracePeriod: Bool {
+        guard let restored = lastNetworkRestoredAt else { return false }
+        return now().timeIntervalSince(restored) < Self.networkRestoredGracePeriod
     }
 
     private func handleNewMailEvent(_ event: NewMailEvent) {

@@ -16,7 +16,7 @@ public struct Account: Identifiable, Codable, Equatable, Sendable {
     /// The user's full email address for this account.
     public var email: String
 
-    /// The mail provider preset governing connection and authentication endpoints.
+    /// The mail provider (a preset or `.custom`) governing connection and authentication endpoints.
     public var provider: MailProvider
 
     /// An optional user-specified nickname for this account (e.g., "Work" or "Personal").
@@ -44,6 +44,12 @@ public struct Account: Identifiable, Codable, Equatable, Sendable {
     /// Defaults to `true`.
     public var includeInManualCheck: Bool
 
+    /// The user's own IMAP server, set only for `.custom` accounts. Presets use `MailProvider.presetServer`.
+    public var customServer: IMAPServer?
+
+    /// The login name when it differs from `email`, as some servers expect a bare username. `nil` means the email.
+    public var username: String?
+
     /// Timestamp when this account was added to ding.
     public let dateAdded: Date
 
@@ -56,6 +62,8 @@ public struct Account: Identifiable, Codable, Equatable, Sendable {
         case notificationClickBehavior
         case needsReauthentication
         case includeInManualCheck
+        case customServer
+        case username
         case dateAdded
     }
 
@@ -64,13 +72,15 @@ public struct Account: Identifiable, Codable, Equatable, Sendable {
     /// - Parameters:
     ///   - id: The stable account identifier. Defaults to a newly generated `UUID`.
     ///   - email: The account email address.
-    ///   - provider: The mail provider preset.
+    ///   - provider: The mail provider, a preset or `.custom`.
     ///   - alias: An optional display alias/nickname.
     ///   - syncFrequency: The synchronization frequency. Defaults to `.useDefault`.
     ///   - notificationClickBehavior: The notification click behavior. Defaults to `.useDefault`.
     ///   - needsReauthentication: Flag indicating if the account requires re-authentication. Defaults to `false`.
     ///   - includeInManualCheck: Flag indicating if the account is included in manual mail check. Defaults to `true`.
     ///   - dateAdded: The timestamp when the account was created. Defaults to the current date.
+    ///   - customServer: The IMAP server for a `.custom` provider. Defaults to `nil`.
+    ///   - username: The login name when it differs from the email. Defaults to `nil`.
     public init(
         id: UUID = UUID(),
         email: String,
@@ -80,7 +90,9 @@ public struct Account: Identifiable, Codable, Equatable, Sendable {
         notificationClickBehavior: NotificationClickBehavior = .useDefault,
         needsReauthentication: Bool = false,
         includeInManualCheck: Bool = true,
-        dateAdded: Date = Date()
+        dateAdded: Date = Date(),
+        customServer: IMAPServer? = nil,
+        username: String? = nil
     ) {
         self.id = id
         self.email = email
@@ -90,6 +102,8 @@ public struct Account: Identifiable, Codable, Equatable, Sendable {
         self.notificationClickBehavior = notificationClickBehavior
         self.needsReauthentication = needsReauthentication
         self.includeInManualCheck = includeInManualCheck
+        self.customServer = customServer
+        self.username = username
         // Floor to whole seconds so date equality survives ISO-8601 serialization without fractional discrepancies
         // and never rounds into the future.
         self.dateAdded = Date(timeIntervalSince1970: floor(dateAdded.timeIntervalSince1970))
@@ -105,6 +119,8 @@ public struct Account: Identifiable, Codable, Equatable, Sendable {
         self.notificationClickBehavior = try container.decodeIfPresent(NotificationClickBehavior.self, forKey: .notificationClickBehavior) ?? .useDefault
         self.needsReauthentication = try container.decodeIfPresent(Bool.self, forKey: .needsReauthentication) ?? false
         self.includeInManualCheck = try container.decodeIfPresent(Bool.self, forKey: .includeInManualCheck) ?? true
+        self.customServer = try container.decodeIfPresent(IMAPServer.self, forKey: .customServer)
+        self.username = try container.decodeIfPresent(String.self, forKey: .username)
         self.dateAdded = try container.decode(Date.self, forKey: .dateAdded)
     }
 
@@ -118,12 +134,41 @@ public struct Account: Identifiable, Codable, Equatable, Sendable {
         try container.encode(notificationClickBehavior, forKey: .notificationClickBehavior)
         try container.encode(needsReauthentication, forKey: .needsReauthentication)
         try container.encode(includeInManualCheck, forKey: .includeInManualCheck)
+        try container.encodeIfPresent(customServer, forKey: .customServer)
+        try container.encodeIfPresent(username, forKey: .username)
         try container.encode(dateAdded, forKey: .dateAdded)
     }
 
     /// Normalizes an optional account alias by trimming whitespace and newlines, returning `nil` if empty.
     public static func normalizeAlias(_ alias: String?) -> String? {
         guard let trimmed = alias?.trimmingCharacters(in: .whitespacesAndNewlines), !trimmed.isEmpty else {
+            return nil
+        }
+        return trimmed
+    }
+
+    /// The server to connect to: the account's own for `.custom`, otherwise the provider's preset.
+    ///
+    /// The empty fallback is reachable only from a hand-edited file. It fails at connect and shows up in the
+    /// account's health, which is better than failing the whole decode and quarantining every account.
+    public var server: IMAPServer {
+        customServer ?? provider.presetServer ?? IMAPServer(host: "", port: 993)
+    }
+
+    /// The name sent to `LOGIN`: the explicit `username`, or the email address.
+    public var loginName: String {
+        username ?? email
+    }
+
+    /// What the user calls their secret: custom servers take an ordinary password, presets an app password.
+    public var credentialName: String {
+        provider == .custom ? "password" : "app password"
+    }
+
+    /// Normalizes a login name by trimming whitespace, returning `nil` when it is empty or just the email again.
+    public static func normalizeUsername(_ username: String?, email: String) -> String? {
+        guard let trimmed = username?.trimmingCharacters(in: .whitespacesAndNewlines), !trimmed.isEmpty,
+              trimmed.caseInsensitiveCompare(email.trimmingCharacters(in: .whitespacesAndNewlines)) != .orderedSame else {
             return nil
         }
         return trimmed
@@ -148,6 +193,8 @@ public struct Account: Identifiable, Codable, Equatable, Sendable {
         lhs.notificationClickBehavior == rhs.notificationClickBehavior &&
         lhs.needsReauthentication == rhs.needsReauthentication &&
         lhs.includeInManualCheck == rhs.includeInManualCheck &&
+        lhs.customServer == rhs.customServer &&
+        lhs.username == rhs.username &&
         abs(lhs.dateAdded.timeIntervalSince(rhs.dateAdded)) < 1.0
     }
 }

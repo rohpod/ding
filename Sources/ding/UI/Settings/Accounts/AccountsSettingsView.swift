@@ -15,6 +15,7 @@ struct AccountsSettingsView: View {
 
     @ObservedObject private var accountManager: AccountManager
     private let imapClientFactory: @Sendable (MailProvider) -> any IMAPConnecting
+    private let syncEngine: SyncEngine
 
     @State private var selectedAccountID: UUID?
     @State private var isShowingAddAccountSheet: Bool = false
@@ -25,12 +26,15 @@ struct AccountsSettingsView: View {
     /// - Parameters:
     ///   - accountManager: The centralized account manager. Defaults to `AccountManager.shared`.
     ///   - imapClientFactory: Factory for creating IMAP clients during verification. Defaults to `NIOIMAPClient`.
+    ///   - syncEngine: Source of per-account connection health. Defaults to `SyncEngine.shared`.
     init(
         accountManager: AccountManager = .shared,
-        imapClientFactory: @escaping @Sendable (MailProvider) -> any IMAPConnecting = { _ in NIOIMAPClient() }
+        imapClientFactory: @escaping @Sendable (MailProvider) -> any IMAPConnecting = { _ in NIOIMAPClient() },
+        syncEngine: SyncEngine = .shared
     ) {
         self.accountManager = accountManager
         self.imapClientFactory = imapClientFactory
+        self.syncEngine = syncEngine
     }
 
     /// The currently selected `Account`, if any.
@@ -65,7 +69,7 @@ struct AccountsSettingsView: View {
             // MARK: - Right Panel (Account Detail / Empty State)
             Group {
                 if let account = selectedAccount {
-                    AccountDetailView(account: account, accountManager: accountManager, imapClientFactory: imapClientFactory)
+                    AccountDetailView(account: account, accountManager: accountManager, imapClientFactory: imapClientFactory, syncEngine: syncEngine)
                         .id(account.id)
                 } else {
                     emptyStateView
@@ -273,6 +277,33 @@ private struct AccountListRow: View {
     }
 }
 
+// MARK: - Account Status
+
+/// Shows whether ding is really watching one account, and why not. Observes the engine itself so health updates
+/// re-render only this section.
+private struct AccountStatusSection: View {
+    let account: Account
+    @ObservedObject var syncEngine: SyncEngine
+
+    var body: some View {
+        let health = syncEngine.accountHealth[account.id]
+        Section("Status") {
+            Text(AccountHealthFormatter.summary(
+                account: account,
+                health: health,
+                isNetworkAvailable: syncEngine.isNetworkAvailable
+            ))
+
+            if let message = health?.lastErrorMessage, !account.needsReauthentication {
+                Text(message)
+                    .font(.caption)
+                    .foregroundColor(.secondary)
+                    .textSelection(.enabled)
+            }
+        }
+    }
+}
+
 // MARK: - Account Detail View
 
 /// Right panel view displaying configuration fields for the selected account.
@@ -282,6 +313,9 @@ private struct AccountDetailView: View {
     let account: Account
     @ObservedObject var accountManager: AccountManager
     let imapClientFactory: @Sendable (MailProvider) -> any IMAPConnecting
+    /// Passed down to `AccountStatusSection` only. This view must not observe the engine, or every health update
+    /// would re-render the alias field and its debounce.
+    let syncEngine: SyncEngine
 
     @State private var aliasText: String = ""
     @State private var newAppPassword: String = ""
@@ -292,6 +326,8 @@ private struct AccountDetailView: View {
 
     var body: some View {
         Form {
+            AccountStatusSection(account: account, syncEngine: syncEngine)
+
             // MARK: - Re-authentication Callout Banner
             if account.needsReauthentication {
                 Section {
@@ -310,6 +346,22 @@ private struct AccountDetailView: View {
                 LabeledContent("Provider") {
                     Text(account.provider.displayName)
                         .foregroundColor(.secondary)
+                }
+
+                if account.provider == .custom {
+                    LabeledContent("Server") {
+                        Text("\(account.server.host):\(account.server.port)")
+                            .foregroundColor(.secondary)
+                            .textSelection(.enabled)
+                    }
+
+                    if let username = account.username {
+                        LabeledContent("Username") {
+                            Text(username)
+                                .foregroundColor(.secondary)
+                                .textSelection(.enabled)
+                        }
+                    }
                 }
 
                 LabeledContent("Alias") {
@@ -351,7 +403,8 @@ private struct AccountDetailView: View {
                         updateAccountClickBehavior(newBehavior)
                     }
                 )) {
-                    ForEach(NotificationClickBehavior.allCases, id: \.self) { behavior in
+                    // A custom server has no known webmail page to open.
+                    ForEach(NotificationClickBehavior.allCases.filter { account.provider != .custom || $0 != .openInBrowser }, id: \.self) { behavior in
                         Text(behavior.displayName).tag(behavior)
                     }
                 }
@@ -406,31 +459,37 @@ private struct AccountDetailView: View {
                     .font(.title3)
 
                 VStack(alignment: .leading, spacing: 2) {
-                    Text("Authentication failed — generate a new app password")
+                    Text(account.provider == .custom
+                         ? "Authentication failed — enter your password again"
+                         : "Authentication failed — generate a new \(account.credentialName)")
                         .font(.subheadline)
                         .fontWeight(.semibold)
                         .foregroundColor(.red)
 
-                    Text("The mail server rejected credentials for this account. Generate a new App Password and update it below.")
+                    Text(account.provider == .custom
+                         ? "The mail server rejected the credentials for this account. Enter the correct password below."
+                         : "The mail server rejected credentials for this account. Generate a new App Password and update it below.")
                         .font(.caption)
                         .foregroundColor(.secondary)
                 }
             }
 
-            Button {
-                Self.logger.info("Opening app password URL for re-auth: \(self.account.provider.displayName, privacy: .public)")
-                NSWorkspace.shared.open(account.provider.appPasswordURL)
-            } label: {
-                HStack(spacing: 4) {
-                    Text("Get an app password for \(account.provider.displayName)")
-                    Image(systemName: "arrow.up.right.square")
+            if let portalURL = account.provider.appPasswordURL {
+                Button {
+                    Self.logger.info("Opening app password URL for re-auth: \(self.account.provider.displayName, privacy: .public)")
+                    NSWorkspace.shared.open(portalURL)
+                } label: {
+                    HStack(spacing: 4) {
+                        Text("Get an app password for \(account.provider.displayName)")
+                        Image(systemName: "arrow.up.right.square")
+                    }
+                    .font(.caption)
                 }
-                .font(.caption)
+                .buttonStyle(.link)
             }
-            .buttonStyle(.link)
 
             HStack(spacing: 8) {
-                SecureField("New App Password", text: $newAppPassword)
+                SecureField(account.provider == .custom ? "New Password" : "New App Password", text: $newAppPassword)
                     .textFieldStyle(.roundedBorder)
 
                 Button("Update Password") {
@@ -537,11 +596,13 @@ private struct AccountDetailView: View {
     /// Verifies the new password against the mail server before storing it, so a mistyped password
     /// cannot clear the re-authentication banner while the account is still unable to sign in.
     private func verifyAndUpdatePassword(_ cleaned: String) async {
-        let client = imapClientFactory(account.provider)
         do {
-            try await client.connect(host: account.provider.imapHost, port: account.provider.imapPort)
-            try await client.login(email: account.email, password: cleaned)
-            await client.disconnect()
+            try await AccountVerifier.verify(
+                client: imapClientFactory(account.provider),
+                server: account.server,
+                loginName: account.loginName,
+                password: cleaned
+            )
 
             try accountManager.updatePassword(forAccountID: account.id, newPassword: cleaned)
             var updated = accountManager.accounts.first(where: { $0.id == account.id }) ?? account
@@ -552,10 +613,9 @@ private struct AccountDetailView: View {
             isUpdatingPassword = false
             Self.logger.info("Successfully updated password and cleared re-authentication requirement for \(self.account.id.uuidString, privacy: .public)")
         } catch {
-            await client.disconnect()
             isUpdatingPassword = false
-            reauthErrorMessage = error.localizedDescription
-            Self.logger.error("Failed to update password for account \(self.account.id.uuidString, privacy: .public): \(error.localizedDescription, privacy: .public)")
+            reauthErrorMessage = AccountVerifier.message(for: error, provider: account.provider)
+            Self.logger.error("Failed to update password for account \(self.account.id.uuidString, privacy: .public): \(error.localizedDescription, privacy: .private)")
         }
     }
 }

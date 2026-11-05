@@ -502,4 +502,37 @@ final class IMAPClientTests: XCTestCase {
         XCTAssertTrue(IMAPClientError.loginRejected("Invalid credentials").localizedDescription.contains("Invalid credentials"))
         XCTAssertTrue(IMAPClientError.temporarilyUnavailable("maintenance").localizedDescription.contains("maintenance"))
     }
+
+    // MARK: - Envelope merge
+
+    func testMergeEnvelopesReplacesFetchedAndKeepsRest() {
+        let now = Date()
+        let found = (1...5).map { MessageSummary(uid: UInt32($0), subject: "", from: "", dateReceived: now) }
+        let details = [
+            MessageSummary(uid: 4, subject: "Four", from: "D", dateReceived: now),
+            MessageSummary(uid: 5, subject: "Five", from: "E", dateReceived: now)
+        ]
+
+        let merged = NIOIMAPClient.mergeEnvelopes(into: found, details: details)
+
+        XCTAssertEqual(merged.map(\.uid), [1, 2, 3, 4, 5])
+        XCTAssertEqual(merged.map(\.from), ["", "", "", "D", "E"])
+    }
+
+    func testMergeEnvelopesKeepsEmptyEntryForExpungedUID() {
+        let now = Date()
+        let found = (1...3).map { MessageSummary(uid: UInt32($0), subject: "", from: "", dateReceived: now) }
+        let details = [MessageSummary(uid: 3, subject: "Three", from: "C", dateReceived: now)]
+
+        let merged = NIOIMAPClient.mergeEnvelopes(into: found, details: details)
+
+        XCTAssertEqual(merged.map(\.uid), [1, 2, 3])
+        XCTAssertEqual(merged[2].subject, "Three")
+        XCTAssertEqual(merged[1].from, "")
+    }
+
+    func testMergeEnvelopesWithEmptyDetailsReturnsFound() {
+        let found = [MessageSummary(uid: 9, subject: "", from: "", dateReceived: Date())]
+        XCTAssertEqual(NIOIMAPClient.mergeEnvelopes(into: found, details: []), found)
+    }
 }

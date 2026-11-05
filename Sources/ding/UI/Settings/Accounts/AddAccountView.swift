@@ -19,8 +19,7 @@ struct AddAccountView: View {
     /// Injected for hermetic unit testing without live network connections.
     private let imapClientFactory: @Sendable (MailProvider) -> any IMAPConnecting
 
-    @State private var email: String = ""
-    @State private var appPassword: String = ""
+    @State private var form = AddAccountFormState()
     @State private var alias: String = ""
     @State private var isVerifying: Bool = false
     @State private var errorMessage: String?
@@ -38,23 +37,22 @@ struct AddAccountView: View {
         self.imapClientFactory = imapClientFactory
     }
 
-    /// The mail provider detected from the current email input.
-    private var detectedProvider: MailProvider? {
-        MailProvider.detect(fromEmail: email)
+    /// The provider in effect: the user's pick, or the one detected from the email.
+    private var provider: MailProvider? {
+        form.effectiveProvider
     }
 
-    /// Determines whether the email format looks like a candidate address (contains @ and a domain).
-    private var isCandidateEmailFormat: Bool {
-        let cleaned = email.trimmingCharacters(in: .whitespacesAndNewlines)
-        let parts = cleaned.split(separator: "@", omittingEmptySubsequences: false)
-        return parts.count == 2 && !parts[0].isEmpty && !parts[1].isEmpty
+    /// What the secret is called on screen.
+    private var credentialLabel: String {
+        provider == .custom ? "Password" : "App Password"
     }
 
-    /// Determines whether the "Continue" action can be executed.
-    private var canContinue: Bool {
-        detectedProvider != nil &&
-            !appPassword.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty &&
-            !isVerifying
+    /// The picker's selection. Choosing is an explicit override that later email edits do not reset.
+    private var providerSelection: Binding<MailProvider?> {
+        Binding(
+            get: { form.effectiveProvider },
+            set: { form.providerOverride = $0 }
+        )
     }
 
     var body: some View {
@@ -70,41 +68,51 @@ struct AddAccountView: View {
                     .font(.subheadline)
                     .fontWeight(.medium)
 
-                TextField("name@example.com", text: $email)
+                TextField("name@example.com", text: $form.email)
                     .textFieldStyle(.roundedBorder)
                     .disabled(isVerifying)
 
-                if let provider = detectedProvider {
-                    HStack(spacing: 5) {
-                        Image(systemName: "checkmark.circle.fill")
-                            .foregroundColor(.green)
-                            .font(.caption)
-                        Text("Provider: \(provider.displayName)")
+                if form.isCandidateEmailFormat {
+                    Picker("Provider", selection: providerSelection) {
+                        if provider == nil {
+                            Text("Choose…").tag(MailProvider?.none)
+                        }
+                        ForEach(MailProvider.presets, id: \.self) { preset in
+                            Text(preset.displayName).tag(MailProvider?.some(preset))
+                        }
+                        Text(MailProvider.custom.displayName).tag(MailProvider?.some(.custom))
+                    }
+                    .disabled(isVerifying)
+
+                    if provider == nil {
+                        Text("ding couldn't tell which provider this is. Choose one, or pick Other (IMAP) to enter a server. Using Google Workspace? Choose Gmail.")
                             .font(.caption)
                             .foregroundColor(.secondary)
+                            .fixedSize(horizontal: false, vertical: true)
                     }
-                } else if isCandidateEmailFormat {
-                    Text("Unsupported provider. ding currently supports Gmail, iCloud, Outlook, Yahoo, and Fastmail.")
-                        .font(.caption)
-                        .foregroundColor(.secondary)
                 }
+            }
+
+            // MARK: - Custom Server
+            if provider == .custom {
+                customServerFields
             }
 
             // MARK: - App Password Field & Instructions
             VStack(alignment: .leading, spacing: 6) {
-                Text("App Password")
+                Text(credentialLabel)
                     .font(.subheadline)
                     .fontWeight(.medium)
 
-                SecureField("App Password", text: $appPassword)
+                SecureField(credentialLabel, text: $form.password)
                     .textFieldStyle(.roundedBorder)
-                    .disabled(detectedProvider == nil || isVerifying)
-                    .opacity(detectedProvider == nil ? 0.5 : 1.0)
+                    .disabled(provider == nil || isVerifying)
+                    .opacity(provider == nil ? 0.5 : 1.0)
 
-                if let provider = detectedProvider {
+                if let provider, let portalURL = provider.appPasswordURL {
                     Button {
                         Self.logger.info("Opening app password portal for provider: \(provider.displayName, privacy: .public)")
-                        NSWorkspace.shared.open(provider.appPasswordURL)
+                        NSWorkspace.shared.open(portalURL)
                     } label: {
                         HStack(spacing: 4) {
                             Text("Get an app password for \(provider.displayName)")
@@ -186,22 +194,63 @@ struct AddAccountView: View {
                     }
                 }
                 .keyboardShortcut(.defaultAction)
-                .disabled(!canContinue)
+                .disabled(!form.canContinue || isVerifying)
             }
         }
         .padding(20)
         .frame(width: 440)
     }
 
+    /// Server, port and optional username for a provider that is not a preset.
+    @ViewBuilder
+    private var customServerFields: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Text("Server")
+                .font(.subheadline)
+                .fontWeight(.medium)
+
+            HStack(spacing: 8) {
+                TextField("mail.example.com", text: $form.host)
+                    .textFieldStyle(.roundedBorder)
+                    .disabled(isVerifying)
+
+                TextField("993", text: $form.port)
+                    .textFieldStyle(.roundedBorder)
+                    .frame(width: 64)
+                    .disabled(isVerifying)
+            }
+
+            if let message = form.serverValidationMessage {
+                Text(message)
+                    .font(.caption)
+                    .foregroundColor(.red)
+                    .fixedSize(horizontal: false, vertical: true)
+            } else {
+                Text("IMAP over TLS (usually port 993) with a trusted certificate.")
+                    .font(.caption)
+                    .foregroundColor(.secondary)
+            }
+
+            Text("Username")
+                .font(.subheadline)
+                .fontWeight(.medium)
+                .padding(.top, 4)
+
+            TextField("Same as email", text: $form.username)
+                .textFieldStyle(.roundedBorder)
+                .disabled(isVerifying)
+        }
+    }
+
     // MARK: - Verification & Creation Logic
 
     private func verifyAndAddAccount() async {
-        guard let provider = detectedProvider else {
+        guard let provider, let server = form.server else {
             return
         }
 
-        let cleanedEmail = email.trimmingCharacters(in: .whitespacesAndNewlines)
-        let cleanedPassword = appPassword.trimmingCharacters(in: .whitespacesAndNewlines)
+        let cleanedEmail = form.email.trimmingCharacters(in: .whitespacesAndNewlines)
+        let cleanedPassword = form.password.trimmingCharacters(in: .whitespacesAndNewlines)
         let finalAlias = Account.normalizeAlias(alias)
 
         isVerifying = true
@@ -209,37 +258,31 @@ struct AddAccountView: View {
 
         Self.logger.info("Initiating IMAP credential verification for provider \(provider.displayName, privacy: .public)")
 
-        let client = imapClientFactory(provider)
         do {
-            try await client.connect(host: provider.imapHost, port: provider.imapPort)
-            try await client.login(email: cleanedEmail, password: cleanedPassword)
-            await client.disconnect()
+            try await AccountVerifier.verify(
+                client: imapClientFactory(provider),
+                server: server,
+                loginName: form.loginName,
+                password: cleanedPassword
+            )
 
             try accountManager.addAccount(
                 email: cleanedEmail,
                 provider: provider,
                 appPassword: cleanedPassword,
-                alias: finalAlias
+                alias: finalAlias,
+                customServer: provider == .custom ? server : nil,
+                username: form.username
             )
 
             Self.logger.info("Account successfully verified and persisted for \(provider.displayName, privacy: .public)")
             isVerifying = false
             dismiss()
-        } catch let error as IMAPClientError {
-            await client.disconnect()
-            isVerifying = false
-            Self.logger.error("IMAP client verification failed: \(error.localizedDescription, privacy: .public)")
-            errorMessage = error.localizedDescription
-        } catch let error as AccountManagerError {
-            await client.disconnect()
-            isVerifying = false
-            Self.logger.error("AccountManager error after verification: \(error.localizedDescription, privacy: .public)")
-            errorMessage = error.localizedDescription
         } catch {
-            await client.disconnect()
             isVerifying = false
-            Self.logger.error("Unexpected error during account addition: \(error.localizedDescription, privacy: .public)")
-            errorMessage = error.localizedDescription
+            // The text can echo the user's server and login, so it is shown but not logged publicly.
+            Self.logger.error("Account verification or creation failed: \(error.localizedDescription, privacy: .private)")
+            errorMessage = AccountVerifier.message(for: error, provider: provider)
         }
     }
 }

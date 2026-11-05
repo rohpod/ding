@@ -16,6 +16,9 @@ public enum AccountManagerError: LocalizedError, Sendable, Equatable {
     /// The provided app password was empty.
     case emptyPassword
 
+    /// A custom IMAP account was added without a server.
+    case missingServer
+
     public var errorDescription: String? {
         switch self {
         case .accountNotFound(let id):
@@ -26,6 +29,8 @@ public enum AccountManagerError: LocalizedError, Sendable, Equatable {
             return "Email address cannot be empty."
         case .emptyPassword:
             return "App password cannot be empty."
+        case .missingServer:
+            return "Enter the IMAP server for this account."
         }
     }
 }
@@ -128,9 +133,11 @@ public final class AccountManager: ObservableObject {
     ///
     /// - Parameters:
     ///   - email: The account email address.
-    ///   - provider: The mail provider preset.
-    ///   - appPassword: The IMAP app password for authentication.
+    ///   - provider: The mail provider, a preset or `.custom`.
+    ///   - appPassword: The IMAP app password (or password, for a custom server) for authentication.
     ///   - alias: An optional user-specified nickname.
+    ///   - customServer: The server for a `.custom` provider. Ignored for presets.
+    ///   - username: The login name when it differs from the email. Empty or equal to the email means none.
     /// - Returns: The newly created and persisted `Account`.
     /// - Throws: `AccountManagerError`, `KeychainError`, or `AccountStoreError` on failure.
     @discardableResult
@@ -138,7 +145,9 @@ public final class AccountManager: ObservableObject {
         email: String,
         provider: MailProvider,
         appPassword: String,
-        alias: String? = nil
+        alias: String? = nil,
+        customServer: IMAPServer? = nil,
+        username: String? = nil
     ) throws -> Account {
         let cleanedEmail = email.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !cleanedEmail.isEmpty else {
@@ -154,12 +163,19 @@ public final class AccountManager: ObservableObject {
             throw AccountManagerError.duplicateAccount(email: cleanedEmail)
         }
 
+        if provider == .custom && customServer == nil {
+            throw AccountManagerError.missingServer
+        }
+
         let finalAlias = Account.normalizeAlias(alias)
+        let finalUsername = Account.normalizeUsername(username, email: cleanedEmail)
 
         let account = Account(
             email: cleanedEmail,
             provider: provider,
-            alias: finalAlias
+            alias: finalAlias,
+            customServer: provider == .custom ? customServer : nil,
+            username: finalUsername
         )
 
         // 1. Store secret in Keychain first

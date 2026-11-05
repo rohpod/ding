@@ -19,7 +19,9 @@ ding runs quietly in the background, watches your inbox over IMAP, and notifies 
 
 - **Native macOS app** — built entirely in Swift, no cross-platform framework overhead
 - **Low resource usage** — idles at a small RAM footprint, uses IMAP IDLE (push) where supported instead of constant polling
-- **Multiple accounts** — Gmail, iCloud, Outlook, Yahoo, and Fastmail, each configured independently
+- **Multiple accounts** — Gmail, iCloud, Outlook, Yahoo, and Fastmail, plus any other IMAP server over TLS (see [Other IMAP servers](#other-imap-servers)), each configured independently
+- **Grouped notifications** — each account's notifications stack together, and a batch of new mail names the senders instead of only a count
+- **Connection status** — see in the menu and in Settings whether each account is live, when it last checked successfully, and why it can't connect; if an account stays unreachable for about 20 minutes, ding tells you
 - **Configurable sync** — per-account frequency: Always (push), or poll every 1/5/15/30/60 minutes
 - **Manual "Check for Mail"** — trigger an immediate check for one account or all accounts at once from the menu bar, independent of your configured sync frequency
 - **Configurable notification behavior** — clicking a notification can do nothing, open your default mail app, or open the provider's webmail in your browser
@@ -82,13 +84,24 @@ Updates are cryptographically signed and verified before installing, so you're n
 | Yahoo | Requires an [app password](https://login.yahoo.com/myaccount/security) |
 | Fastmail | Requires an [app password](https://app.fastmail.com/settings/security/apppasswords) |
 
-ding never sees or stores your real account password. App passwords are separate, provider-generated credentials, revocable independently at any time, stored only in your Mac's Keychain — never in a plaintext file, never transmitted anywhere except directly to your provider's own mail server over TLS.
+For the five providers above, ding never sees or stores your real account password. App passwords are separate, provider-generated credentials, revocable independently at any time, stored only in your Mac's Keychain — never in a plaintext file, never transmitted anywhere except directly to your provider's own mail server over TLS.
 
-Generic/custom IMAP servers aren't supported yet — only the five providers above.
+For [other IMAP servers](#other-imap-servers) you enter your account's ordinary password, since there is no app-password portal to send you to. It gets the same treatment: stored only in your Keychain and sent only to the server you entered, over TLS.
+
+### Other IMAP servers
+
+Anything else works through **Other (IMAP)** in the Add Account sheet: Google Workspace and other custom domains (choose the matching provider, e.g. Gmail), regional providers like `yahoo.co.in`, and self-hosted servers. There are limits, all deliberate:
+
+- **Implicit TLS only**, on any port (usually 993). Servers that require STARTTLS (port 143) aren't supported.
+- **Trusted certificates only.** A self-signed or mismatched certificate is refused rather than bypassed, since that would expose your password.
+- **Password login only.** Servers that require OAuth, including many Microsoft 365 tenants, won't work.
+- **Enter the server by name**, not IP address, and no autodiscovery: ding doesn't look up your domain with any third party.
+
+To change a custom server, remove the account and add it again.
 
 ## Why app passwords, not "Sign in with Google/Microsoft"?
 
-OAuth (the "sign in with..." flow) requires the app to be registered and security-reviewed by each provider, which for Gmail specifically involves a paid third-party security audit — not something a free, volunteer FOSS project can currently take on. App passwords avoid that entirely, work identically across all five providers, and keep the whole authentication flow contained to your own Mac. See [Settings → Accounts → Add Account] for an in-app explanation shown when you connect an account.
+OAuth (the "sign in with..." flow) requires the app to be registered and security-reviewed by each provider, which for Gmail specifically involves a paid third-party security audit — not something a free, volunteer FOSS project can currently take on. App passwords avoid that entirely, work identically across the five providers above, and keep the whole authentication flow contained to your own Mac. See [Settings → Accounts → Add Account] for an in-app explanation shown when you connect one of them. Other IMAP servers use a normal password, so that explanation doesn't apply to them.
 
 ## How it works
 
@@ -98,6 +111,14 @@ ding uses [swift-nio-imap](https://github.com/apple/swift-nio-imap) to speak IMA
 - Otherwise, ding connects briefly at your chosen interval, checks for new messages, and disconnects. Nothing lingers between checks.
 
 New-mail detection is based on IMAP UIDs, so you won't get duplicate notifications for mail you've already seen, even across restarts.
+
+When several messages arrive at once, ding fetches the sender and subject of the newest few and lists up to three senders in one notification.
+
+### Connection status
+
+Each account's status appears under **Account Status** in the menu bar and at the top of its page in **Settings → Accounts**. It shows whether the account is live (push) or polling, and the time of the last successful check. The time is absolute (for example "checked 2:41 PM") because the menu isn't redrawn while it's closed. A quiet inbox still counts as a successful check. Brief failures, such as the network lagging after wake, show only "Reconnecting…"; a warning appears after about a minute of failed attempts. The status isn't saved between launches.
+
+If an account can't connect for about 20 minutes, ding sends one notification (useful when the menu bar icon is hidden). It stays quiet while your Mac is offline and for a few minutes after the network returns.
 
 ## Privacy
 
